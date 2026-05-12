@@ -1,3 +1,3 @@
 """OpenClose — A local-first Python AI coding assistant."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
