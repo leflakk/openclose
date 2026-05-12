@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -217,6 +218,7 @@ async def test_grep_tool(tmp_path: Path) -> None:
 
 # --- Bash tool ---
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp cwd")
 @pytest.mark.asyncio
 async def test_bash_tool() -> None:
     tool = make_bash_tool("/tmp")
@@ -227,6 +229,7 @@ async def test_bash_tool() -> None:
     assert "[cwd: /tmp]" in result.output
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp cwd")
 @pytest.mark.asyncio
 async def test_bash_tool_failure() -> None:
     tool = make_bash_tool("/tmp")

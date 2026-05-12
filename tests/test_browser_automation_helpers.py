@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -1781,6 +1782,10 @@ async def test_detect_layers_batched_concurrent_resolves() -> None:
 
 # ── navigation dump persistence ─────────────────────────────────────────────
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="str(Path('/tmp/...')) yields backslash-separated paths on Windows",
+)
 def test_format_tool_output_saved_line_includes_grep_read_hint() -> None:
     """`Page content saved at:` appears whenever a dump path is provided,
     with the Grep/Read recovery hint."""

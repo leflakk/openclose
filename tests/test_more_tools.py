@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,7 @@ async def test_bash_empty() -> None:
     assert not result.ok
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp cwd and bash redirection syntax")
 @pytest.mark.asyncio
 async def test_bash_with_stderr() -> None:
     tool = make_bash_tool("/tmp")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ async def test_run_timeout() -> None:
     assert "timed out" in result.stderr.lower()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")
 @pytest.mark.asyncio
 async def test_run_timeout_partial_stdout() -> None:
     result = await run(
@@ -45,6 +47,7 @@ async def test_run_timeout_partial_stdout() -> None:
     assert "partial_output" in result.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX `pwd` and native path format")
 @pytest.mark.asyncio
 async def test_run_with_cwd(tmp_path: Path) -> None:
     result = await run("pwd", cwd=str(tmp_path))

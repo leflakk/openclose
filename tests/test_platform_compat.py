@@ -10,6 +10,7 @@ import asyncio
 import shutil
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -58,6 +59,10 @@ def test_kill_process_group_windows_branch(monkeypatch: pytest.MonkeyPatch) -> N
     assert int(sent_signal) == 1  # signal.CTRL_BREAK_EVENT == 1
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="exercises POSIX os.killpg + signal.SIGKILL, neither exists on Windows",
+)
 def test_kill_process_group_posix_branch(monkeypatch: pytest.MonkeyPatch) -> None:
     """On POSIX, os.killpg is attempted; falls back to proc.kill on error."""
     monkeypatch.setattr("sys.platform", "linux")
@@ -137,6 +142,22 @@ async def test_run_uses_start_new_session_on_posix(
     assert "creationflags" not in captured["kwargs"]
 
 
+# --- find_bash: cross-platform fallback exhaustion -------------------------
+
+def test_find_bash_returns_none_when_nothing_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """find_bash returns None when shutil.which fails AND, on Windows, none of
+    the Git Bash probe paths exist. Exercises the POSIX-early-return on Linux
+    and the empty-candidate Windows fallback path."""
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.delenv("ProgramFiles", raising=False)
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert process_mod.find_bash() is None
+
+
 # --- bash tool: missing-bash guard -----------------------------------------
 
 @pytest.mark.asyncio
@@ -144,7 +165,9 @@ async def test_bash_tool_missing_returns_helpful_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """When bash is absent, the tool returns a guided error mentioning Git Bash/WSL."""
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    # find_bash() probes Git Bash install paths on Windows beyond shutil.which,
+    # so patch it directly where the bash tool imports it.
+    monkeypatch.setattr("openclose.tool.tools.bash.find_bash", lambda: None)
 
     tool = make_bash_tool(str(tmp_path))
     result = await tool.execute(command="echo hello")
@@ -159,7 +182,9 @@ async def test_bash_endpoint_missing_returns_127(
     monkeypatch: pytest.MonkeyPatch, client: TestClient,
 ) -> None:
     """The /api/bash endpoint returns 127 with a helpful stderr when bash is missing."""
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    # The endpoint imports find_bash inside the request handler, so patch at
+    # the source module rather than at shutil.which.
+    monkeypatch.setattr("openclose.util.process.find_bash", lambda: None)
 
     resp = client.post("/api/bash", json={"command": "echo hello"})
 

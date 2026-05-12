@@ -3,6 +3,7 @@ draining, and session processor tool_result / compaction paths."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -149,6 +150,7 @@ async def test_python_grep_search_exception(tmp_path: Path) -> None:
 
 # ── process.py: timeout with stderr content (line 110) ─────────────────────
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")
 @pytest.mark.asyncio
 async def test_process_timeout_with_stderr() -> None:
     """On timeout, stderr content gets a newline before the timeout message."""
@@ -176,6 +178,7 @@ async def test_process_timeout_no_stderr() -> None:
 
 # ── process.py: pending task cleanup (lines 122-131) ───────────────────────
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")
 @pytest.mark.asyncio
 async def test_process_normal_completion() -> None:
     """Normal completion collects stdout and stderr."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -64,6 +65,7 @@ async def test_process_run_simple() -> None:
     assert result.duration > 0
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")
 @pytest.mark.asyncio
 async def test_process_run_nonzero_exit() -> None:
     from openclose.util.process import run
@@ -73,6 +75,7 @@ async def test_process_run_nonzero_exit() -> None:
     assert result.returncode == 42
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")
 @pytest.mark.asyncio
 async def test_process_run_stderr() -> None:
     from openclose.util.process import run
@@ -90,6 +93,7 @@ async def test_process_run_timeout() -> None:
     assert "timed out" in result.stderr
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX os.killpg / signal.SIGKILL")
 def test_kill_process_group_missing() -> None:
     from openclose.util.process import _kill_process_group
 
