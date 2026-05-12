@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Callable, Awaitable
+from typing import Any, Callable, Awaitable
 
 from openclose.log import get_logger
 
@@ -31,12 +31,11 @@ class FileWatcher:
 
         self._task = asyncio.create_task(self._watch(awatch))
 
-    async def _watch(self, awatch: object) -> None:
-        """Internal watch loop."""
-        from watchfiles import awatch as aw
-
+    async def _watch(self, awatch: Callable[..., Any]) -> None:
+        """Internal watch loop. ``awatch`` is injected by ``start()`` so tests
+        can substitute a fake async iterator."""
         try:
-            async for changes in aw(str(self._root)):
+            async for changes in awatch(str(self._root)):
                 try:
                     await self._callback(changes)
                 except Exception:
