@@ -1,0 +1,87 @@
+[project]
+name = "openclose"
+version = "0.1.0"
+description = "A Python AI coding assistant — local-first, OpenAI-compatible"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [
+    { name = "OpenClose Contributors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.5",
+    "sqlmodel>=0.0.22",
+    "aiosqlite>=0.20",
+    "python-ulid>=3.0",
+    "rich>=13.9",
+    "pathspec>=0.12",
+    "openai>=1.55",
+    "tiktoken>=0.8",
+    "httpx>=0.28",
+    "aiofiles>=24.1",
+    "watchfiles>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "jinja2>=3.1",
+    "sse-starlette>=2.1",
+    "beautifulsoup4>=4.12",
+    "playwright>=1.40",
+    "Pillow>=10.0",
+    "python-dotenv>=1.0",
+    "croniter>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/leflakk/openclose"
+Repository = "https://github.com/leflakk/openclose"
+Issues = "https://github.com/leflakk/openclose/issues"
+
+[project.scripts]
+openclose = "openclose.cli.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "mypy>=1.13",
+    "ruff>=0.8",
+    "respx>=0.21",
+    "types-croniter>=2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openclose"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.coverage.run]
+omit = [
+    "src/openclose/recorder/*",
+    "src/openclose/tool/tools/browser_automation_dom.py",
+    "src/openclose/tool/tools/browser_automation_vision.py",
+]

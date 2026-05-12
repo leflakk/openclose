@@ -1,0 +1,206 @@
+# OpenClose — main configuration
+#
+# Copy this file to ~/.config/openclose/config.toml (XDG_CONFIG_HOME on
+# Linux; ~/Library/Application Support/openclose on macOS;
+# %APPDATA%\openclose on Windows) and edit the values you care about.
+# Project-level overrides go in <project>/.openclose/config.toml.
+#
+# Priority (highest wins):
+#   1. Environment variables (OPENCLOSE_*)
+#   2. Project config (.openclose/config.toml)
+#   3. User config (~/.config/openclose/config.toml)
+#   4. Built-in defaults
+#
+# Every field below is optional — omitted keys keep their default.
+# Full reference: src/openclose/config/schema.py
+# Agent customization: docs/guide-agents-customization.md
+
+
+# ═══ Session defaults ════════════════════════════════════════════════
+# Which agent a fresh session opens with. Built-ins are "build" (full
+# tool access) and "plan" (read-only analysis). Custom agents declared
+# below can also be used as the default.
+default_agent = "build"
+
+# Context-window budget for the session, in tokens. The agent compacts
+# its history once usage crosses `compaction_threshold * max_context_tokens`.
+# Set this to roughly the model's real context window — going above it
+# will fail at the provider, going below wastes capacity.
+max_context_tokens = 128000
+
+# Fraction of `max_context_tokens` at which automatic compaction kicks
+# in. Must be in (0.0, 1.0]. 0.9 = compact at 90% full.
+compaction_threshold = 0.9
+
+# Hard cap on the size of the compaction summary itself, in tokens.
+#compaction_summary_max_tokens = 2000
+
+
+# ═══ LLM providers ═══════════════════════════════════════════════════
+# Declare one or more OpenAI-compatible endpoints. Use the `/model`
+# slash command in the UI to switch the active (provider, model) on a
+# session at runtime — the active selection is persisted per session.
+#
+# `kind` discriminates the implementation. Only "openai_compatible" is
+# supported today; future kinds (e.g. "anthropic", "google") will be
+# added without any schema change to this file.
+
+# Which provider new sessions start with. Empty → first entry in
+# [[providers]]. Sessions that have explicitly switched keep their
+# choice.
+default_provider = "default"
+
+[[providers]]
+name = "default"
+kind = "openai_compatible"
+
+# Examples:
+#   vLLM:       "http://localhost:8000/v1"
+#   llama.cpp:  "http://localhost:8080/v1"
+#   Ollama:     "http://localhost:11434/v1"
+#   OpenAI:     "https://api.openai.com/v1"
+base_url = "http://localhost:8000/v1"
+
+# API key resolution order (first non-empty wins):
+#   1. env var named by `api_key_env` (e.g. "OPENROUTER_API_KEY")
+#   2. inline `api_key` below
+#   3. OPENCLOSE_API_KEY env (legacy, single-provider setups)
+#   4. OPENAI_API_KEY env (legacy fallback)
+api_key_env = ""
+api_key = ""
+
+# Model used when this provider is active and the session hasn't picked
+# a specific one. Empty = let the provider pick.
+# Examples: "meta-llama/Llama-3.1-8B-Instruct", "qwen2.5-coder:7b", "gpt-4o"
+default_model = ""
+
+# Optional: models offered in the `/model` picker for this provider.
+# When empty, only `default_model` is offered (if non-empty).
+# models = ["qwen2.5-coder:7b", "meta-llama/Llama-3.1-8B-Instruct"]
+
+# ── Additional provider (uncomment to enable) ───────────────────────
+# Example: route via OpenRouter while keeping the local vLLM endpoint
+# available. Switch between them at runtime with /model.
+#
+#[[providers]]
+#name = "openrouter"
+#kind = "openai_compatible"
+#base_url = "https://openrouter.ai/api/v1"
+#api_key_env = "OPENROUTER_API_KEY"
+#default_model = "anthropic/claude-3.5-sonnet"
+#models = [
+#    "anthropic/claude-3.5-sonnet",
+#    "google/gemini-2.0-flash-001",
+#    "deepseek/deepseek-chat",
+#]
+
+
+# ═══ Visual grounding endpoint (optional) ═══════════════════════════
+# Uncomment this section to enable the visual-grounding fallback for
+# `browser_automation` ("rich" mode: screenshot + grounding model
+# resolves natural-language targets to pixel coordinates). When the
+# section is absent, `browser_automation` runs in DOM-only mode using
+# only the accessibility tree.
+#
+# IMPORTANT: TO USE VISUAL GROUNDING YOUR PROVIDER (MAIN ENDPOINT)
+# MUST BE VISION CAPABLE + AN ADDITIONAL GROUNDING MODEL NEEDED
+# RECOMMENDED GROUNDING MODEL: microsoft/Fara-7B (gguf available too)
+#[browser_vision_grounding]
+#base_url = "http://localhost:5002/v1"
+#api_key  = ""
+#model    = "local"
+
+
+# ═══ Agents ══════════════════════════════════════════════════════════
+# Built-in agents (`build`, `plan`) have locked tool restrictions — you
+# can override `model`, `temperature`, `max_steps`, `description`, and
+# `system_prompt`, but `traits`, `allowed_tools`, and `denied_tools` are
+# ignored on them and will log a warning.
+#
+# Custom agents are fully self-contained — no inheritance from built-ins.
+#
+# Note: `delegate` is a tool, not an agent — it spawns a read-only
+# sub-agent internally. Configure its sampling temperature in the
+# [temperatures] section below.
+
+[[agents]]
+name = "build"
+description = "Coding agent. Writes code and systematically tests every change."
+mode = "primary"
+temperature = 0.7
+max_steps = 200
+# model = "your-model-name"  # override per-agent if you want a different model
+# system_prompt = "..."      # replaces the default Layer-2 prompt
+
+[[agents]]
+name = "plan"
+temperature = 0.7
+max_steps = 200
+
+# ── Custom agent example (uncomment and edit) ───────────────────────
+# Custom agents must declare everything they need — there is no
+# inheritance from `build` or `plan`.
+#
+#[[agents]]
+#name = "reviewer"
+#description = "Code reviewer focused on correctness and security"
+#model = "your-model-name"
+#temperature = 0.3
+#max_steps = 100
+#traits = ["readonly"]
+#allowed_tools = ["read", "grep", "glob"]
+#denied_tools = []
+#system_prompt = """You are a senior code reviewer working in $project_dir.
+#Today is $date. You have access to: $tool_names.
+#
+#Focus on correctness, security (OWASP Top 10), and clarity. Do not
+#suggest stylistic changes unless they affect readability."""
+#
+# Template variables available in `system_prompt`:
+#   $project_dir, $date, $agent_name, $agent_description, $tool_names
+
+
+# ═══ Permissions ═════════════════════════════════════════════════════
+# Per-tool allow/deny/ask rules. Last matching rule wins. `tool` and
+# `path` accept "*" as a wildcard. `action` is one of allow|deny|ask.
+#
+# Defaults: `read`, `grep`, and `glob` are auto-allowed (purely
+# read-only, no shell, no network). Add an `ask` or `deny` rule for any
+# of them below to opt back in to prompts. All other tools default to
+# `ask`.
+#
+# Examples (uncomment and edit):
+#[[permissions]]
+#tool = "*"
+#action = "ask"
+#
+#[[permissions]]
+#tool = "read"
+#action = "ask"
+#
+#[[permissions]]
+#tool = "bash"
+#path = "/tmp/*"
+#action = "deny"
+
+
+# ═══ Non-agent LLM temperatures ══════════════════════════════════════
+# Sampling temperatures for LLM calls that are NOT primary agents. This
+# covers tool-internal one-shot calls (recorder annotators, browser
+# planners, the cron-NL parser, the skill builder/runner), the
+# read-only sub-agent spawned by the `delegate` tool, and the read-only
+# reviewer sub-agent spawned by the `plan` tool when called with
+# `phase="draft"`. Each field is independently overridable; values
+# shown are the project defaults. Range: [0.0, 2.0].
+[temperatures]
+skills_runner             = 0.1  # headless skill execution
+skills_builder            = 0.1  # distill a session into a skill form
+browser_vision_grounding  = 0.0  # vision-mode pixel grounding (keep low for deterministic clicks)
+browser_vision_planner    = 0.0  # vision-mode action planner
+browser_dom_planner       = 0.0  # DOM-mode action planner
+recorder_merger           = 0.1  # merge per-chunk procedures into one recording
+recorder_task_builder     = 0.1  # annotate procedure with task structure
+recorder_chunk_annotator  = 0.2  # multimodal chunk annotation
+cron_nl                   = 0.0  # natural-language → cron expression
+delegate                  = 0.7  # read-only sub-agent spawned by the delegate tool
+plan_reviewer             = 0.0  # read-only reviewer sub-agent spawned by the plan tool (phase="draft")
