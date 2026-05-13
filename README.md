@@ -1,3 +1,8 @@
+| Browser automation | Skill form | Job form |
+|:---:|:---:|:---:|
+| <img width="300" src="https://github.com/user-attachments/assets/f4a60130-ece1-406b-9a47-a6b5ffd45e64" /> | <img width="300" src="https://github.com/user-attachments/assets/28ca40df-27cd-4210-a13f-d25f5445ea28" /> | <img width="300" src="https://github.com/user-attachments/assets/e08cccdc-bcbd-4ea0-b295-4bc270924343" /> |
+
+
 # OpenClose
 
 A local-first Python AI coding assistant **and automation platform** that works with any OpenAI-compatible API.
