@@ -1830,6 +1830,7 @@ async def acquire_singleton_browser() -> tuple[Any, Any, Any]:
         _singleton_pw = pw
         _singleton_browser = browser
         _singleton_context = context
+        _attach_disconnect_handler(browser)
         return pw, browser, context
 
 
@@ -1838,6 +1839,26 @@ async def reset_singleton_browser() -> None:
     ``acquire_singleton_browser`` reconnects from scratch."""
     async with _singleton_init_lock:
         await _reset_singleton_locked()
+
+
+def _attach_disconnect_handler(browser: Any) -> None:
+    """Clear singleton globals when *this* browser disconnects, so the next
+    acquire reconnects from scratch instead of using a stale handle.
+
+    The identity check guards against a stale handler firing after a
+    successor singleton has already been installed.
+    """
+    def _on_disconnect(*_args: Any) -> None:
+        global _singleton_pw, _singleton_browser, _singleton_context
+        if _singleton_browser is browser:
+            _singleton_pw = None
+            _singleton_browser = None
+            _singleton_context = None
+            log.info("Browser disconnected — singleton cleared")
+    try:
+        browser.on("disconnected", _on_disconnect)
+    except Exception:
+        pass
 
 
 async def navigate_initial_url(context: Any, page: Any, url: str) -> Any:
