@@ -85,9 +85,16 @@ def test_main_sessions() -> None:
 
 def test_main_run() -> None:
     from openclose.cli.cli import main
+    import asyncio as _asyncio
+
+    # Closing the coroutine in the mock's side_effect silences
+    # "coroutine '_cmd_run' was never awaited" without actually running it.
+    def _consume(coro: object) -> None:
+        if _asyncio.iscoroutine(coro):
+            coro.close()
 
     with patch("sys.argv", ["openclose", "run", "-p", "hello"]):
-        with patch("openclose.cli.cli.asyncio.run") as mock_run:
+        with patch("openclose.cli.cli.asyncio.run", side_effect=_consume) as mock_run:
             with patch("openclose.cli.cli.setup_logging"):
                 with patch("openclose.cli.cli.ConfigPaths.ensure_dirs"):
                     main()

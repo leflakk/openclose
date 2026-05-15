@@ -12,7 +12,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -158,6 +158,41 @@ def test_find_bash_returns_none_when_nothing_resolves(
     assert process_mod.find_bash() is None
 
 
+def test_find_bash_windows_probes_git_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """On Windows, find_bash probes ProgramFiles + LOCALAPPDATA for Git Bash."""
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    # Lay out a fake Git install so one of the probed paths resolves.
+    program_files = tmp_path / "PF"
+    bash_exe = program_files / "Git" / "bin" / "bash.exe"
+    bash_exe.parent.mkdir(parents=True)
+    bash_exe.write_text("")
+
+    monkeypatch.setenv("ProgramFiles", str(program_files))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LA"))  # exercises line 36-37
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+
+    found = process_mod.find_bash()
+    assert found == str(bash_exe)
+
+
+def test_find_bash_windows_returns_none_when_no_candidate_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """On Windows, find_bash returns None after probing all paths if none exist."""
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "doesnotexist"))
+    monkeypatch.delenv("ProgramW6432", raising=False)
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    assert process_mod.find_bash() is None
+
+
 # --- bash tool: missing-bash guard -----------------------------------------
 
 @pytest.mark.asyncio
@@ -192,6 +227,94 @@ async def test_bash_endpoint_missing_returns_127(
     data = resp.json()
     assert data["returncode"] == 127
     assert "bash not found" in data["stderr"].lower()
+
+
+# --- bash tool: full execute path with mocked bash + run ------------------
+#
+# On the Windows CI runner, find_bash() returns None (no Git Bash installed),
+# so the bash tool short-circuits at the "bash not found" guard and lines
+# 187-222 of bash.py are never reached. The POSIX-only tests in test_tools.py
+# / test_more_tools.py cover that path on Linux/macOS via real bash. These
+# tests mock find_bash + run so the same lines are covered on Windows too.
+
+def _fake_run_factory(
+    stdout: str = "", stderr: str = "", returncode: int = 0,
+    timed_out: bool = False, duration: float = 0.0,
+) -> Callable[..., Awaitable[process_mod.ProcessResult]]:
+    """Build an async stand-in for util.process.run that returns a canned result."""
+    async def fake_run(*_args: Any, **_kwargs: Any) -> process_mod.ProcessResult:
+        return process_mod.ProcessResult(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            duration=duration,
+        )
+    return fake_run
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_execute_success_with_duration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Successful command with stdout, stderr, and duration >= 1.0s."""
+    monkeypatch.setattr("openclose.tool.tools.bash.find_bash", lambda: "/fake/bash")
+    fake_run = _fake_run_factory(
+        stdout="hello\n", stderr="warn\n", returncode=0, duration=1.5,
+    )
+    monkeypatch.setattr("openclose.tool.tools.bash.run", fake_run)
+
+    tool = make_bash_tool(str(tmp_path))
+    result = await tool.execute(command="echo hello")
+
+    assert result.ok
+    assert "$ echo hello" in result.output
+    assert f"[cwd: {tmp_path}]" in result.output
+    assert "hello" in result.output
+    assert "[stderr]" in result.output and "warn" in result.output
+    assert "[duration: 1.5s]" in result.output
+    assert result.metadata["returncode"] == 0
+    assert result.metadata["timed_out"] is False
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_execute_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Timeout case populates the [timed out] marker and an error message."""
+    monkeypatch.setattr("openclose.tool.tools.bash.find_bash", lambda: "/fake/bash")
+    fake_run = _fake_run_factory(
+        stdout="", stderr="", returncode=-1, timed_out=True, duration=2.0,
+    )
+    monkeypatch.setattr("openclose.tool.tools.bash.run", fake_run)
+
+    tool = make_bash_tool(str(tmp_path))
+    result = await tool.execute(command="sleep 999", timeout=2000)
+
+    assert not result.ok
+    assert "[timed out after 2.0s]" in result.output
+    assert "timed out" in result.error.lower()
+    assert result.metadata["timed_out"] is True
+
+
+@pytest.mark.asyncio
+async def test_bash_tool_execute_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Non-zero exit code produces a 'Command failed with exit code N' error."""
+    monkeypatch.setattr("openclose.tool.tools.bash.find_bash", lambda: "/fake/bash")
+    fake_run = _fake_run_factory(
+        stdout="", stderr="oops", returncode=2, duration=0.1,
+    )
+    monkeypatch.setattr("openclose.tool.tools.bash.run", fake_run)
+
+    tool = make_bash_tool(str(tmp_path))
+    result = await tool.execute(command="false")
+
+    assert not result.ok
+    assert "exit code 2" in result.error
+    assert "oops" in result.output
+    assert "[duration:" not in result.output  # duration < 1.0s
 
 
 # --- JSON path output: forward slashes only --------------------------------

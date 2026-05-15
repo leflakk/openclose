@@ -62,7 +62,9 @@ async def test_process_run_simple() -> None:
     result = await run("echo", "hello", timeout=10.0)
     assert result.ok
     assert "hello" in result.stdout
-    assert result.duration > 0
+    # Windows' time.monotonic() resolution can record 0.0 for sub-millisecond
+    # commands like `echo`, so allow zero — we just want the field populated.
+    assert result.duration >= 0
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX bash invocation")

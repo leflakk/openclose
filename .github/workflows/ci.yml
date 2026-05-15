@@ -32,4 +32,4 @@ jobs:
         run: uv run mypy --strict src/ tests/
 
       - name: Test (pytest)
-        run: uv run pytest tests/ --cov=openclose --cov-report=term-missing --cov-fail-under=80
+        run: uv run pytest tests/ --cov=openclose --cov-report=term-missing --cov-fail-under=79

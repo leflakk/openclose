@@ -413,6 +413,48 @@ function initChat(sessionId) {
         overlay.focus();
     }
 
+    // Keyboard navigation for modal popups built on .permission-overlay /
+    // .permission-dialog. Pre-focuses the first action button, traps Tab
+    // inside the dialog, and closes on Escape without sending a backend reply.
+    function attachDialogKeyboardNav(overlay, dialog, opts) {
+        opts = opts || {};
+        const focusableSelector =
+            'button:not([disabled]), [href], input:not([disabled]), ' +
+            'select:not([disabled]), textarea:not([disabled]), ' +
+            '[tabindex]:not([tabindex="-1"])';
+
+        function focusables() {
+            return Array.from(dialog.querySelectorAll(focusableSelector))
+                .filter(el => el.offsetParent !== null);
+        }
+
+        const initial = opts.initialFocus
+            || dialog.querySelector('.permission-actions button:not([disabled])')
+            || focusables()[0];
+        if (initial) initial.focus();
+
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                overlay.remove();
+                if (typeof opts.onEscape === 'function') opts.onEscape();
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            const list = focusables();
+            if (list.length === 0) return;
+            const first = list[0];
+            const last = list[list.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        });
+    }
+
     function showSessionPicker(sessions) {
         const overlay = document.createElement('div');
         overlay.className = 'picker-overlay';
@@ -768,6 +810,7 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        attachDialogKeyboardNav(overlay, dialog);
     }
 
     // --- Plan review dialog ---
@@ -847,6 +890,7 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        attachDialogKeyboardNav(overlay, dialog);
     }
 
     // --- Ask user dialog ---
@@ -937,6 +981,8 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        const firstChoice = questionsContainer.querySelector('button');
+        attachDialogKeyboardNav(overlay, dialog, { initialFocus: firstChoice });
     }
 
     // --- Interrupt / button state ---
@@ -1367,7 +1413,11 @@ function initChat(sessionId) {
         finalizeAssistant();
         currentAbort = null;
         showSendButton();
-        input.focus();
+        // Don't steal focus from a permission/plan/ask-user dialog that the
+        // stream itself just opened — the dialog needs the keyboard.
+        if (!document.querySelector('.permission-overlay')) {
+            input.focus();
+        }
     }
 
     // --- @ file mention ---
@@ -3475,7 +3525,7 @@ function initSidebars(sessionId) {
             if (!params.length) return null;
             const wrap = document.createElement('div');
             wrap.className = 'job-skill-params';
-            wrap.style.cssText = 'margin:6px 0 4px 22px;padding:6px 8px;border-left:2px solid #e5e5e3;display:flex;flex-direction:column;gap:4px';
+            wrap.style.cssText = 'margin:6px 0 4px 22px;padding:6px 8px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:4px';
             if (!skillParams[slug]) skillParams[slug] = {};
             const vals = skillParams[slug];
             params.forEach(p => {
@@ -3486,9 +3536,9 @@ function initSidebars(sessionId) {
                 row.className = 'job-skill-param-row';
                 row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:0.85em';
                 const label = document.createElement('label');
-                label.style.cssText = 'min-width:140px;color:#4b5563;font-weight:400';
-                const req = p.required ? ' <span style="color:#b91c1c" title="required">*</span>' : '';
-                label.innerHTML = name + req + ' <span style="color:#6b7280">(' + (p.type || 'string') + ')</span>';
+                label.style.cssText = 'min-width:140px;color:var(--text-muted);font-weight:400';
+                const req = p.required ? ' <span style="color:var(--danger-hover)" title="required">*</span>' : '';
+                label.innerHTML = name + req + ' <span style="color:var(--text-muted)">(' + (p.type || 'string') + ')</span>';
                 let input;
                 if (p.type === 'bool') {
                     input = document.createElement('input');
@@ -3525,7 +3575,7 @@ function initSidebars(sessionId) {
             const host = dialog.querySelector('#job-skills-list');
             host.innerHTML = '';
             if (!skills.length) {
-                host.innerHTML = '<p style="font-size:0.85em;color:#6b7280">No skills yet — create one first.</p>';
+                host.innerHTML = '<p style="font-size:0.85em;color:var(--text-muted)">No skills yet — create one first.</p>';
                 return;
             }
             // Surface any ordered slug that no longer exists in the skills list
@@ -3534,7 +3584,7 @@ function initSidebars(sessionId) {
             ordered.filter(sl => !knownSlugs.has(sl)).forEach(sl => {
                 const warn = document.createElement('div');
                 warn.className = 'job-skills-row';
-                warn.style.cssText = 'color:#b45309;font-size:0.85em';
+                warn.style.cssText = 'color:var(--accent-hover);font-size:0.85em';
                 warn.textContent = 'Unknown skill: ' + sl + ' (deleted — will fail to run)';
                 host.appendChild(warn);
             });
@@ -3552,7 +3602,7 @@ function initSidebars(sessionId) {
                 }
                 row.innerHTML =
                     '<label><input type="checkbox" data-slug="' + s.slug + '"' + (isSel ? ' checked' : '') + '> ' +
-                        s.name + ' <span style="color:#6b7280">(' + s.slug + ')</span></label>' +
+                        s.name + ' <span style="color:var(--text-muted)">(' + s.slug + ')</span></label>' +
                     controls;
                 row.querySelector('input').addEventListener('change', async (e) => {
                     const slug = e.target.dataset.slug;
@@ -3608,10 +3658,10 @@ function initSidebars(sessionId) {
         async function refreshPreview() {
             const text = cronInput.value.trim();
             if (!text) {
-                previewEl.innerHTML = '<span style="color:#6b7280">Enter a cron expression or a phrase like "every weekday at 8am".</span>';
+                previewEl.innerHTML = '<span style="color:var(--text-muted)">Enter a cron expression or a phrase like "every weekday at 8am".</span>';
                 return;
             }
-            previewEl.innerHTML = '<span style="color:#6b7280">Parsing…</span>';
+            previewEl.innerHTML = '<span style="color:var(--text-muted)">Parsing…</span>';
             try {
                 const r = await fetch('/api/jobs/cron/parse', {
                     method: 'POST',
@@ -3620,7 +3670,7 @@ function initSidebars(sessionId) {
                 });
                 const d = await r.json();
                 if (!r.ok) {
-                    previewEl.innerHTML = '<span style="color:#b91c1c">' + (d.error || r.statusText) + '</span>';
+                    previewEl.innerHTML = '<span style="color:var(--danger-hover)">' + (d.error || r.statusText) + '</span>';
                     previewEl.dataset.cron = '';
                     return;
                 }
@@ -3628,11 +3678,11 @@ function initSidebars(sessionId) {
                 previewEl.innerHTML =
                     '<div>cron: <code>' + d.cron + '</code></div>' +
                     (d.description ? '<div style="margin-top:4px">' + d.description + '</div>' : '') +
-                    '<div style="margin-top:6px;color:#6b7280">Next 5 fires (' + (d.timezone || 'UTC') + '):</div>' +
+                    '<div style="margin-top:6px;color:var(--text-muted)">Next 5 fires (' + (d.timezone || 'UTC') + '):</div>' +
                     '<ul class="cron-next" style="margin:2px 0 0 16px;padding:0">' + nexts + '</ul>';
                 previewEl.dataset.cron = d.cron;
             } catch (e) {
-                previewEl.innerHTML = '<span style="color:#b91c1c">Network error: ' + e.message + '</span>';
+                previewEl.innerHTML = '<span style="color:var(--danger-hover)">Network error: ' + e.message + '</span>';
                 previewEl.dataset.cron = '';
             }
         }
@@ -3768,7 +3818,7 @@ function initSidebars(sessionId) {
             '<div class="job-form-group">' +
                 '<label>Skills</label>' +
                 '<div id="job-skills-list" class="job-skills-list"></div>' +
-                '<div style="margin-top:4px;font-size:0.8em;color:#6b7280">Checked skills run serial in numbered order. Use ↑/↓ to reorder.</div>' +
+                '<div style="margin-top:4px;font-size:0.8em;color:var(--text-muted)">Checked skills run serial in numbered order. Use ↑/↓ to reorder.</div>' +
             '</div>' +
             '<div class="job-form-group">' +
                 '<label>Timing</label>' +
@@ -3779,7 +3829,7 @@ function initSidebars(sessionId) {
                 '<div id="job-timing-recurring" class="job-timing-block">' +
                     '<label>Cron expression or natural language</label>' +
                     '<input type="text" id="job-cron" placeholder="e.g. 0 8 * * 1-5 or \'every weekday at 8am\'">' +
-                    '<div class="cron-preview" id="job-cron-preview"><span style="color:#6b7280">Enter a cron expression or a phrase like "every weekday at 8am".</span></div>' +
+                    '<div class="cron-preview" id="job-cron-preview"><span style="color:var(--text-muted)">Enter a cron expression or a phrase like "every weekday at 8am".</span></div>' +
                 '</div>' +
                 '<div id="job-timing-oneshot" class="job-timing-block" style="display:none">' +
                     '<label>Run at</label>' +
@@ -3824,3 +3874,21 @@ function initSidebars(sessionId) {
 
     loadJobs();
 }
+
+// --- Theme toggle (sun/moon button in top-bar) ---
+(function initThemeToggle() {
+    var btn = document.getElementById('theme-toggle');
+    if (!btn) return;
+    function syncBtn(theme) {
+        var isDark = theme === 'dark';
+        btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
+        btn.title = isDark ? 'Switch to light theme' : 'Switch to dark theme';
+    }
+    syncBtn(document.documentElement.dataset.theme || 'light');
+    btn.addEventListener('click', function () {
+        var next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+        document.documentElement.dataset.theme = next;
+        try { localStorage.setItem('oc-theme', next); } catch (e) {}
+        syncBtn(next);
+    });
+})();
