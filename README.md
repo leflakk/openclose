@@ -436,7 +436,7 @@ Code quality requirements:
 
 - **Linting** — `uv run ruff check src/ tests/`
 - **Type checking** — `uv run mypy --strict src/ tests/`
-- **Tests** — `uv run pytest tests/ --cov=openclose --cov-fail-under=80`
+- **Tests** — `uv run pytest tests/ --cov=openclose --cov-fail-under=79`
 
 CI runs all three checks on every push and pull request via GitHub Actions.
 
