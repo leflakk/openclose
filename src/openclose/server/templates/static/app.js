@@ -413,6 +413,48 @@ function initChat(sessionId) {
         overlay.focus();
     }
 
+    // Keyboard navigation for modal popups built on .permission-overlay /
+    // .permission-dialog. Pre-focuses the first action button, traps Tab
+    // inside the dialog, and closes on Escape without sending a backend reply.
+    function attachDialogKeyboardNav(overlay, dialog, opts) {
+        opts = opts || {};
+        const focusableSelector =
+            'button:not([disabled]), [href], input:not([disabled]), ' +
+            'select:not([disabled]), textarea:not([disabled]), ' +
+            '[tabindex]:not([tabindex="-1"])';
+
+        function focusables() {
+            return Array.from(dialog.querySelectorAll(focusableSelector))
+                .filter(el => el.offsetParent !== null);
+        }
+
+        const initial = opts.initialFocus
+            || dialog.querySelector('.permission-actions button:not([disabled])')
+            || focusables()[0];
+        if (initial) initial.focus();
+
+        overlay.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                overlay.remove();
+                if (typeof opts.onEscape === 'function') opts.onEscape();
+                return;
+            }
+            if (e.key !== 'Tab') return;
+            const list = focusables();
+            if (list.length === 0) return;
+            const first = list[0];
+            const last = list[list.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        });
+    }
+
     function showSessionPicker(sessions) {
         const overlay = document.createElement('div');
         overlay.className = 'picker-overlay';
@@ -768,6 +810,7 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        attachDialogKeyboardNav(overlay, dialog);
     }
 
     // --- Plan review dialog ---
@@ -847,6 +890,7 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        attachDialogKeyboardNav(overlay, dialog);
     }
 
     // --- Ask user dialog ---
@@ -937,6 +981,8 @@ function initChat(sessionId) {
 
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        const firstChoice = questionsContainer.querySelector('button');
+        attachDialogKeyboardNav(overlay, dialog, { initialFocus: firstChoice });
     }
 
     // --- Interrupt / button state ---
@@ -1367,7 +1413,11 @@ function initChat(sessionId) {
         finalizeAssistant();
         currentAbort = null;
         showSendButton();
-        input.focus();
+        // Don't steal focus from a permission/plan/ask-user dialog that the
+        // stream itself just opened — the dialog needs the keyboard.
+        if (!document.querySelector('.permission-overlay')) {
+            input.focus();
+        }
     }
 
     // --- @ file mention ---

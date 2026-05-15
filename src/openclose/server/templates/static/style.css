@@ -249,6 +249,8 @@ main:has(.layout) { max-width: none; padding: 0; }
 h1 { font-size: 1.5rem; color: var(--text); letter-spacing: -0.01em; }
 
 .btn { padding: 0.5rem 1rem; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-family: inherit; }
+.btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.permission-overlay .btn:focus { outline: none; box-shadow: var(--focus-ring); }
 .btn-primary { background: var(--accent); color: #ffffff; }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-primary:disabled, .btn-primary:disabled:hover { background: var(--border-strong); color: var(--text-subtle); cursor: not-allowed; }
