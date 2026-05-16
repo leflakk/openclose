@@ -53,7 +53,7 @@ TIME_LIMIT_S = 300  # 5 minutes
 POST_ACTION_WAIT_S = 0.5  # post-loop settle before dump_page_content
 
 # Action families for adaptive post-action wait.
-_NAV_ACTIONS = frozenset({"visit_url", "web_search", "history_back"})
+_NAV_ACTIONS = frozenset({"history_back"})
 _MAYBE_NAV_ACTIONS = frozenset({"left_click", "key"})
 
 MAX_SNAPSHOT_ELEMENTS = 300
@@ -81,11 +81,11 @@ KEY_MAP: dict[str, str] = {
 async def wait_after_action(page: Any, action: str) -> None:
     """Adaptive post-action wait tuned to the action's navigation profile.
 
-    Full-nav actions (visit_url, web_search, history_back) wait for ``load``
-    and a short ``networkidle`` window so the next snapshot sees the new
-    page fully mounted. Possibly-nav actions (left_click, key)
-    get a short ``networkidle`` window to catch SPA route changes and XHR.
-    Local actions just settle briefly. All load-state waits have their
+    Full-nav actions (``history_back``) wait for ``load`` and a short
+    ``networkidle`` window so the next snapshot sees the new page fully
+    mounted. Possibly-nav actions (left_click, key) get a short
+    ``networkidle`` window to catch SPA route changes and XHR. Local
+    actions just settle briefly. All load-state waits have their
     timeouts swallowed — long-poll / websocket sites never reach
     ``networkidle`` and must not stall the loop.
     """
@@ -283,21 +283,6 @@ async def execute_action(page: Any, action_args: dict[str, Any]) -> str:
         # Grounding model: positive = up. Playwright mouse.wheel: positive delta_y = down.
         await page.mouse.wheel(0, -pixels)
         return f"scroll(pixels={pixels})"
-
-    elif action == "visit_url":
-        url = action_args.get("url", "")
-        await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-        return f"visit_url({url})"
-
-    elif action == "web_search":
-        query = action_args.get("query", "")
-        encoded_query = quote_plus(query)
-        await page.goto(
-            f"https://www.bing.com/search?q={encoded_query}&FORM=QBLH",
-            wait_until="domcontentloaded",
-            timeout=15000,
-        )
-        return f"web_search({query!r})"
 
     elif action == "history_back":
         await page.go_back(wait_until="domcontentloaded", timeout=10000)
@@ -995,7 +980,7 @@ def summarise_recent_actions(
             desc = ""
         result_text = (result_step or {}).get("content", "") or "(no result)"
         if len(result_text) > 120:
-            result_text = result_text[:120] + "…"
+            result_text = result_text[:250] + "…"
         lines.append(f"{i}. {action}({desc}) → {result_text}")
     return "\n".join(lines)
 
@@ -1728,6 +1713,27 @@ async def _pick_or_create_page(context: Any) -> Any:
     return await context.new_page()
 
 
+def _pick_existing_page_for_view(context: Any) -> Any | None:
+    """Return the most-recent page that looks valid, or None.
+
+    Sync-only check via _page_looks_valid — no CDP round-trip, no
+    timeout, never creates a page. Safe to call from UI viewers that
+    must not disturb the agent's navigation. Prefers context.pages[-1]
+    to match handle_tab_switch's notion of the active tab, then falls
+    back to older pages if the newest is invalid.
+    """
+    pages = list(context.pages)
+    if not pages:
+        return None
+    last = pages[-1]
+    if _page_looks_valid(last):
+        return last
+    for p in reversed(pages[:-1]):
+        if _page_looks_valid(p):
+            return p
+    return None
+
+
 _PAGE_LIFECYCLE_ERROR_MARKERS = (
     "detached", "closed", "target", "crashed", "navigating frame was detached",
 )
@@ -1839,6 +1845,57 @@ async def reset_singleton_browser() -> None:
     ``acquire_singleton_browser`` reconnects from scratch."""
     async with _singleton_init_lock:
         await _reset_singleton_locked()
+
+
+async def acquire_singleton_browser_readonly() -> tuple[Any, Any, Any] | None:
+    """Read-only counterpart to ``acquire_singleton_browser``.
+
+    Returns ``(pw, browser, context)`` if a live singleton already exists
+    OR if a fresh CDP connection succeeds against an already-running
+    Chrome. Returns ``None`` if no Chrome is reachable — never launches a
+    new browser, never creates a context or page.
+
+    Intended for UI viewers (e.g. the screenshot endpoint) that must
+    observe the agent's browser without disturbing it. Connecting via
+    CDP to an already-running Chrome is non-disruptive; launching a new
+    Chrome or creating new contexts/pages would be.
+    """
+    global _singleton_pw, _singleton_browser, _singleton_context
+    async with _singleton_init_lock:
+        if (
+            _singleton_pw is not None
+            and _connection_is_alive(_singleton_browser)
+            and _singleton_context is not None
+        ):
+            return _singleton_pw, _singleton_browser, _singleton_context
+        await _reset_singleton_locked()
+        from playwright.async_api import async_playwright
+
+        pw = await async_playwright().start()
+        try:
+            browser = await pw.chromium.connect_over_cdp(CDP_URL)
+        except Exception:
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+            return None
+        if not browser.contexts:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+            return None
+        context = browser.contexts[0]
+        _singleton_pw = pw
+        _singleton_browser = browser
+        _singleton_context = context
+        _attach_disconnect_handler(browser)
+        return pw, browser, context
 
 
 def _attach_disconnect_handler(browser: Any) -> None:
@@ -2049,35 +2106,64 @@ class EventContext:
 # Intent validation
 # ---------------------------------------------------------------------------
 
-_VALID_INTENTS = frozenset({"goto_page", "navigate"})
+_VALID_INTENTS = frozenset({"visit_url", "act_on_page", "web_search"})
 
 
-def validate_intent(intent: str, task: str, url: str) -> str | None:
-    """Return an error message if the intent/task/url combo is invalid,
-    else None. Called at tool entry before any browser work."""
+def validate_intent(
+    intent: str, task: str, url: str, query: str = ""
+) -> str | None:
+    """Return an error message if the intent / task / url / query combo
+    is invalid, else None. Called at tool entry before any browser work."""
     if not intent:
         return (
-            "intent parameter is required. Use 'goto_page' to load a "
-            "URL and read its body, or 'navigate' with a task to "
-            "reason about reaching a goal."
+            "intent parameter is required. Use 'visit_url' to load a "
+            "URL and read its body, 'web_search' to run a Bing search "
+            "and read the results page, or 'act_on_page' with a task "
+            "to reason about reaching a goal on the current page."
         )
     if intent not in _VALID_INTENTS:
         return (
             f"Unknown intent '{intent}'. Valid values: "
             f"{', '.join(sorted(_VALID_INTENTS))}."
         )
-    if intent == "goto_page":
+    if intent == "visit_url":
         if not url:
-            return "intent='goto_page' requires a url."
+            return "intent='visit_url' requires a url."
         if task:
             return (
-                "intent='goto_page' doesn't accept a task. "
-                "Use intent='navigate' if reasoning is needed to "
+                "intent='visit_url' doesn't accept a task. "
+                "Use intent='act_on_page' if reasoning is needed to "
                 "reach the goal."
             )
-    else:  # navigate
+        if query:
+            return (
+                "intent='visit_url' doesn't accept a query. "
+                "Use intent='web_search' to run a Bing search."
+            )
+    elif intent == "web_search":
+        if not query:
+            return "intent='web_search' requires a query."
+        if task:
+            return (
+                "intent='web_search' doesn't accept a task. "
+                "Use intent='act_on_page' if reasoning is needed to "
+                "reach the goal."
+            )
+        if url:
+            return (
+                "intent='web_search' doesn't accept a url. "
+                "Use intent='visit_url' to open a specific URL."
+            )
+    else:  # act_on_page
         if not task:
-            return "intent='navigate' requires a task describing the goal."
+            return (
+                "intent='act_on_page' requires a task describing the goal."
+            )
+        if query:
+            return (
+                "intent='act_on_page' doesn't accept a query. "
+                "Use intent='web_search' to run a Bing search."
+            )
     return None
 
 
@@ -2476,7 +2562,7 @@ def format_tool_output(
 
 
 # ---------------------------------------------------------------------------
-# goto_page executor
+# visit_url / web_search executor
 # ---------------------------------------------------------------------------
 
 async def run_goto_intent(
@@ -2486,7 +2572,7 @@ async def run_goto_intent(
     ctx: "EventContext",
     project_dir: str = ".",
 ) -> tuple[Any, ToolResult]:
-    """Execute the ``goto_page`` intent.
+    """Execute the ``visit_url`` intent.
 
     Bypasses the planner entirely: navigate to *url*, wait for settle
     (including a short ``networkidle`` window so SPA hydration finishes
@@ -2499,6 +2585,10 @@ async def run_goto_intent(
     recovery. The agent-facing output always includes interactive
     elements, links and iframes (capped); the page text never appears
     in-line.
+
+    Also used by ``run_web_search_intent`` (which builds a Bing search
+    URL and delegates here) so the search-result page goes through the
+    same settle / dump / persist pipeline as a direct URL visit.
     """
     # 1. Navigate (reuses helper with detached-frame recovery).
     try:
@@ -2572,4 +2662,26 @@ async def run_goto_intent(
             "subagent_steps": ctx.steps_log,
             "failure_reason": None,
         },
+    )
+
+
+async def run_web_search_intent(
+    context: Any,
+    page: Any,
+    query: str,
+    ctx: "EventContext",
+    project_dir: str = ".",
+) -> tuple[Any, ToolResult]:
+    """Execute the ``web_search`` intent.
+
+    URL-encodes *query*, builds a Bing search URL, and delegates to
+    ``run_goto_intent`` so the search-result page goes through the same
+    settle / dump / persist pipeline as a direct URL visit. Returns the
+    same ``(page, ToolResult)`` shape.
+    """
+    bing_url = (
+        f"https://www.bing.com/search?q={quote_plus(query)}&FORM=QBLH"
+    )
+    return await run_goto_intent(
+        context, page, bing_url, ctx=ctx, project_dir=project_dir,
     )

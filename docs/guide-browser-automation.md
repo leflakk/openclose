@@ -102,11 +102,24 @@ When the DOM tool can't resolve an element it emits a structured failure:
 
 Agents are prompted (in their system prompt) to inspect `failure_reason` and, if it's `element_not_in_tree` or `element_ambiguous`, re-issue the request against `browser_automation_vision`. Other failures (`timeout`, `navigation_blocked`, `invalid_intent`) are not escalated — they indicate a bug in the intent, not a tool mismatch.
 
-## Action reference
+## Tool intents (main-agent surface)
 
-Both tools accept the same actions. The DOM tool also supports the `element_index` form of targeted actions; the vision tool uses `target` (a natural-language description the grounding model resolves).
+`browser_automation` exposes three intents to the main agent. Page loading and web search live here, _not_ in the planner — the planner only acts on a page that is already loaded.
 
-### Element-targeted actions (DOM tool)
+```json
+{"intent": "visit_url",    "url": "https://example.com"}
+{"intent": "web_search",   "query": "latest openclose release notes"}
+{"intent": "act_on_page",  "task": "click the first search result", "url": "https://example.com"}
+```
+
+- `visit_url` and `web_search` use the same post-load pipeline (settle → dump → persist `Page content saved at:`); `web_search` simply builds a Bing search URL from `query` first.
+- `act_on_page` hands `task` to the planner sub-agent below. `url` is optional — when supplied, it is loaded first.
+
+## Action reference (planner sub-agent, inside `act_on_page`)
+
+Both modes (DOM / rich) accept the same planner actions. DOM mode supports the `element_index` form of targeted actions; rich mode additionally accepts `target` (a natural-language description the grounding model resolves).
+
+### Element-targeted actions
 
 ```json
 {"action": "left_click", "element_index": 7}
@@ -116,18 +129,16 @@ Both tools accept the same actions. The DOM tool also supports the `element_inde
 {"action": "scroll", "element_index": 12, "pixels": -500}
 ```
 
-### Target-by-description actions (vision tool)
+### Target-by-description actions (rich mode only)
 
 ```json
 {"action": "left_click", "target": "the blue Submit button at the bottom of the form"}
 {"action": "type", "target": "the search box in the top bar", "text": "openclose"}
 ```
 
-### Direct actions (both tools)
+### Direct actions
 
 ```json
-{"action": "visit_url", "url": "https://example.com"}
-{"action": "web_search", "query": "latest openclose release notes"}   // Bing
 {"action": "history_back"}
 {"action": "scroll", "pixels": -500}                                   // whole page
 {"action": "type", "text": "no element_index — whatever is focused"}
@@ -137,13 +148,15 @@ Both tools accept the same actions. The DOM tool also supports the `element_inde
 {"action": "terminate", "status": "success", "summary": "..."}
 ```
 
+The planner _cannot_ load a new URL or run a web search on its own. If it needs a different page, it `terminate`s and the main agent re-issues `visit_url` / `web_search`.
+
 ### Post-action waits
 
 `browser_automation_shared.wait_after_action` adjusts the settle time to the action family:
 
 | Family | Actions | Wait |
 |---|---|---|
-| Full-navigation | `visit_url`, `web_search`, `history_back` | `load` (timeout 10 s) + `networkidle` (timeout 3 s), both swallowed on timeout |
+| Full-navigation | `history_back` | `load` (timeout 10 s) + `networkidle` (timeout 3 s), both swallowed on timeout |
 | Possibly-nav | `left_click`, `key` | `networkidle` (timeout 1.5 s), swallowed |
 | Local | everything else | 300 ms sleep |
 

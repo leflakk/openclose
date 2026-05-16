@@ -48,7 +48,7 @@ from openclose.tool.tools.browser_automation_shared import (
     fuzzy_match_a11y,
     dump_page_content, format_tool_output,
     write_navigation_dump,
-    validate_intent, run_goto_intent,
+    validate_intent, run_goto_intent, run_web_search_intent,
     describe_outcome, wait_after_action,
     navigate_initial_url,
     handle_tab_switch, recover_page_if_dead,
@@ -186,8 +186,6 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                             "on the screen.\n"
                             "* `left_click`: Click the left mouse button.\n"
                             "* `scroll`: Performs a scroll of the mouse scroll wheel.\n"
-                            "* `visit_url`: Visit a specified URL.\n"
-                            "* `web_search`: Perform a web search with a specified query.\n"
                             "* `history_back`: Go back to the previous page in the browser history.\n"
                             "* `pause_and_memorize_fact`: Pause and memorize a fact for future "
                             "reference.\n"
@@ -196,7 +194,7 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                         ),
                         "enum": [
                             "key", "type", "mouse_move", "left_click", "scroll",
-                            "visit_url", "web_search", "history_back",
+                            "history_back",
                             "pause_and_memorize_fact", "wait", "terminate",
                         ],
                         "type": "string",
@@ -237,14 +235,6 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                             "negative values scroll down. Required only by `action=scroll`."
                         ),
                         "type": "number",
-                    },
-                    "url": {
-                        "description": "The URL to visit. Required only by `action=visit_url`.",
-                        "type": "string",
-                    },
-                    "query": {
-                        "description": "The query to search for. Required only by `action=web_search`.",
-                        "type": "string",
                     },
                     "fact": {
                         "description": (
@@ -363,8 +353,6 @@ modern React / shadow-DOM inputs.
 both ``element_index`` and ``target``)
 
 ## Direct actions (no element resolution, executed as-is)
-- ``{"action": "visit_url", "url": "https://..."}``
-- ``{"action": "web_search", "query": "..."}``  (uses Bing)
 - ``{"action": "history_back"}``
 - ``{"action": "scroll", "pixels": <int>}``  (whole page)
 - ``{"action": "type", "text": "...", "press_enter": true|false}``  \
@@ -390,8 +378,7 @@ elements, then look at the refreshed snapshot on the next turn.
   - If you need to interact with a dynamically loaded element, try \
 ``wait`` first then check the refreshed snapshot.
   - If the element you need is not in the interactive list even after \
-scrolling, terminate with status:"failure" — the user can enable vision \
-mode to retry with screenshot + grounding.
+scrolling, terminate with status:"failure".
 """
 
 _PROMPT_TARGET_GUIDE_RICH = """\
@@ -429,8 +416,7 @@ into whatever element received focus. WARNING: Tab MOVES focus — \
 NEVER use it after a successful action.
   4. Click a NEARBY visible element (label, heading, sibling) first, \
 then Tab into the target field.
-  5. Try a completely different approach (``visit_url``, \
-``web_search``, ``history_back``).
+  5. Try ``history_back`` to recover, or terminate.
   6. If nothing works after 2 total attempts, ``terminate`` with \
 ``status:"failure"``.
 
@@ -466,9 +452,8 @@ It is your ONLY memory of previous turns — use it to detect loops. If you \
 see the same action repeating, OR a short cycle of 2–3 actions rotating \
 without the snapshot meaningfully changing, you are stuck in a \
 non-working pattern. Do NOT continue the pattern: change strategy entirely \
-(different element/target, scroll, wait, ``history_back``, re-navigate via \
-``visit_url``/``web_search``, or ``terminate`` with ``status:"failure"`` \
-if truly blocked).
+(different element/target, scroll, wait, ``history_back``, or \
+``terminate`` with ``status:"failure"``).
 - HARD LIMIT: Do not repeat the SAME action on the same target/element \
 more than 2 times. After 2 failed attempts, you MUST either try a \
 completely different approach or terminate with status:"failure". \
@@ -476,9 +461,11 @@ Continuing to repeat wastes the step budget.
 - Use ``pause_and_memorize_fact`` ONLY for navigation-relevant notes. \
 Do NOT use it to extract or transcribe page content — content extraction \
 happens automatically after you terminate.
-- NEVER use Google for web searches — always use Bing. Use the \
-``web_search`` action (which routes through Bing) or navigate to \
-bing.com manually. Do NOT visit google.com.
+- You CANNOT load new pages or run web searches yourself — those are \
+the main agent's responsibility, exposed as the ``visit_url`` and \
+``web_search`` tool intents. If the requested information is not \
+reachable from the current page, ``terminate`` with \
+``status:"failure"`` and explain what URL or search would help.
 - When you have navigated to the page that contains the requested \
 information, emit ``terminate`` with ``status:"success"``. You do NOT \
 need to read or summarize the page content — just confirm you arrived \
@@ -857,8 +844,7 @@ def _grounding_failure_message(action_args: dict[str, Any]) -> str:
         f"to type into whatever received focus.\n"
         f"4. Click a NEARBY visible element (label, heading, sibling) first, "
         f"then Tab into the target.\n"
-        f"5. Try a completely different approach (visit_url, web_search, "
-        f"history_back).\n"
+        f"5. Try history_back to recover, or terminate.\n"
         f"6. If nothing works after 2 attempts, terminate with "
         f'status:"failure".'
     )
@@ -1235,10 +1221,11 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
         intent: str = "",
         task: str = "",
         url: str = "",
+        query: str = "",
         max_steps: int = MAX_STEPS,
         **kwargs: object,
     ) -> ToolResult:
-        err = validate_intent(intent, task, url)
+        err = validate_intent(intent, task, url, query)
         if err:
             return ToolResult(error=err)
 
@@ -1300,7 +1287,7 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 return ToolResult(error=f"Failed to start browser: {e}")
 
             try:
-                if intent == "goto_page":
+                if intent == "visit_url":
                     page, result = await run_goto_intent(
                         browser_context, page, url,
                         ctx=ctx,
@@ -1308,7 +1295,15 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                     )
                     return result
 
-                # navigate intent.
+                if intent == "web_search":
+                    page, result = await run_web_search_intent(
+                        browser_context, page, query,
+                        ctx=ctx,
+                        project_dir=project_dir,
+                    )
+                    return result
+
+                # act_on_page intent.
                 from openclose.provider.provider import get_provider
                 planner_provider = get_provider()
                 planner_model = (await planner_provider.detect_model()) or ""
@@ -1405,12 +1400,16 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
     return Tool(
         name="browser_automation",
         description=(
-            "USE IT TO OPEN A KNOWN URL OR TO DRIVE CHROME VIA CDP. "
-            "`goto_page` opens a URL and returns navigation data "
-            "while the visible text is always saved to a markdown file "
-            "so to get it, use `grep` and `read` on the path printed after `Page content saved at:`. "
-            "`navigate` hands a `task` to a sub-agent "
-            "that performs navigation tasks via accessibility tree. "
+            "USE IT TO OPEN A URL, RUN A WEB SEARCH, OR DRIVE CHROME VIA CDP. "
+            "`visit_url` opens a URL and returns navigation data; "
+            "`web_search` runs a Bing search for `query` and returns the "
+            "results page in the same shape. In both cases the visible "
+            "page text is always saved to a markdown file — to read it, "
+            "use `grep` and `read` on the path printed after "
+            "`Page content saved at:`. "
+            "`act_on_page` hands a `task` to a planner sub-agent that "
+            "interacts with the already-loaded page (clicks, forms, "
+            "dropdowns) via the accessibility tree. "
             "Always split tasks into smaller objectives to get better results. "
             "CANNOT BE CALLED IN PARALLEL."
         ),
@@ -1419,28 +1418,32 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 name="intent",
                 description=(
                     "What this call should do. "
-                    "`goto_page`: load `url`, dump the page, and return "
+                    "`visit_url`: load `url`, dump the page, and return "
                     "the URL, title, interactive elements, links, and "
                     "iframes; the full page text is saved to a markdown "
                     "file (path printed in the output) — recover specific "
                     "text from it with `grep` and `read`. "
-                    "`navigate`: hand `task` to a planner sub-agent that "
-                    "interacts with the page (clicks, forms, dropdowns) "
-                    "until the goal is reached; on success returns a "
-                    "short confirmation, on failure returns the same "
-                    "content as `goto_page` plus a `failure_reason:` "
-                    "line for diagnosis."
+                    "`web_search`: run a Bing search for `query` and "
+                    "return the same shape as `visit_url` for the "
+                    "results page. "
+                    "`act_on_page`: hand `task` to a planner sub-agent "
+                    "that interacts with the page (clicks, forms, "
+                    "dropdowns) until the goal is reached; on success "
+                    "returns a short confirmation, on failure returns "
+                    "the same content as `visit_url` plus a "
+                    "`failure_reason:` line for diagnosis."
                 ),
-                enum=["goto_page", "navigate"],
+                enum=["visit_url", "act_on_page", "web_search"],
             ),
             ToolParameter(
                 name="task",
                 description=(
-                    "Goal description for `intent='navigate'` — required "
-                    "there, rejected for `goto_page`. State the objective "
-                    "in plain language (\"add an item to the cart\", "
-                    "\"find the pricing page\"), not the UI steps; the "
-                    "planner decides what to click."
+                    "Goal description for `intent='act_on_page'` — "
+                    "required there, rejected for `visit_url` and "
+                    "`web_search`. State the objective in plain language "
+                    "(\"add an item to the cart\", \"find the pricing "
+                    "page\"), not the UI steps; the planner decides what "
+                    "to click."
                 ),
                 required=False,
             ),
@@ -1448,10 +1451,21 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 name="url",
                 description=(
                     "Target URL (must include scheme, e.g. https://). "
-                    "Required for `goto_page`. Optional for `navigate` as "
-                    "a starting point — when omitted, navigation begins "
-                    "from the current page. If the browser is already on "
-                    "this URL, the navigation step is skipped."
+                    "Required for `visit_url`. Optional for "
+                    "`act_on_page` as a starting point — when omitted, "
+                    "navigation begins from the current page. If the "
+                    "browser is already on this URL, the navigation step "
+                    "is skipped. Rejected for `web_search`."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="query",
+                description=(
+                    "Search query for `intent='web_search'` — required "
+                    "there, rejected for `visit_url` and `act_on_page`. "
+                    "The query is sent to Bing as a normal search "
+                    "string; no operators are required."
                 ),
                 required=False,
             ),
@@ -1460,10 +1474,10 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 type="integer",
                 description=(
                     "Maximum number of planner turns for "
-                    "`intent='navigate'`. Increase for multi-step flows "
-                    "(forms, multi-page wizards); leave at default for "
-                    "short navigations. Ignored for `goto_*` intents. "
-                    "Default 5, hard cap 15."
+                    "`intent='act_on_page'`. Increase for multi-step "
+                    "flows (forms, multi-page wizards); leave at default "
+                    "for short navigations. Ignored for `visit_url` and "
+                    "`web_search`. Default 5, hard cap 15."
                 ),
                 required=False,
             ),

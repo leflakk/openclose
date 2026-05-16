@@ -1244,20 +1244,28 @@ async def toggle_video_compatible(session_id: str) -> JSONResponse:
 async def browser_screenshot() -> Response:
     """Return the current browser page as a PNG, or 503 if unavailable.
 
-    On a lifecycle error (detached frame, closed target, crashed page,
-    disconnected browser) we drop the singleton so the next poll reconnects
-    from scratch — otherwise a transient crash leaves the cache wedged and
-    every subsequent poll returns 503 against the same dead handle.
+    Strictly passive: never opens pages, contexts, or browser
+    connections. The UI's 500 ms polling viewer must not disturb the
+    agent's navigation by creating tabs or launching Chrome.
+
+    On a lifecycle error from screenshot itself we drop the singleton
+    so the next poll observes a clean 503 instead of pinning a dead
+    handle.
     """
     from openclose.tool.tools.browser_automation_shared import (
-        acquire_singleton_browser,
-        reset_singleton_browser,
-        _pick_or_create_page,
         _is_page_lifecycle_error,
+        _pick_existing_page_for_view,
+        acquire_singleton_browser_readonly,
+        reset_singleton_browser,
     )
+    acquired = await acquire_singleton_browser_readonly()
+    if acquired is None:
+        return Response(status_code=503, content=b"no browser session")
+    _pw, _browser, context = acquired
+    page = _pick_existing_page_for_view(context)
+    if page is None:
+        return Response(status_code=503, content=b"no page available")
     try:
-        _pw, _browser, context = await acquire_singleton_browser()
-        page = await _pick_or_create_page(context)
         png = await page.screenshot(type="png", full_page=False)
     except Exception as e:
         if _is_page_lifecycle_error(e):
