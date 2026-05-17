@@ -1,7 +1,8 @@
-| Browser automation | Skill form | Job form |
+| General view | Diff viewer | Select code from files |
 |:---:|:---:|:---:|
-| <img width="300" src="https://github.com/user-attachments/assets/f4a60130-ece1-406b-9a47-a6b5ffd45e64" /> | <img width="300" src="https://github.com/user-attachments/assets/28ca40df-27cd-4210-a13f-d25f5445ea28" /> | <img width="300" src="https://github.com/user-attachments/assets/e08cccdc-bcbd-4ea0-b295-4bc270924343" /> |
+| <img width="300" src="https://github.com/user-attachments/assets/53b1078f-aaec-4f72-98e5-5f1175977209" /> | <img width="300" src="https://github.com/user-attachments/assets/c7614198-7781-45d7-b557-7dfb14ee1f7f" /> | <img width="300" src="https://github.com/user-attachments/assets/b7d5698a-d687-41fb-9c2a-3270837c22f2" /> |
 
+https://github.com/user-attachments/assets/60053746-0f52-44c9-b1d1-e0a5514baa61
 
 # OpenClose
 
