@@ -576,6 +576,7 @@ async def test_run_web_search_intent_builds_bing_url() -> None:
             ctx=ctx, project_dir=".",
         )
     assert mock_goto.await_count == 1
+    assert mock_goto.await_args is not None
     forwarded_url = mock_goto.await_args.args[2]
     assert "bing.com/search" in forwarded_url
     assert "test+query" in forwarded_url
