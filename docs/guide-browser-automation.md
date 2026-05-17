@@ -2,20 +2,20 @@
 
 ## Overview
 
-OpenClose ships two browser-automation tools that share one Chromium over CDP, one process-wide lock, and one set of post-action wait heuristics:
+OpenClose ships a single `browser_automation` tool that drives Chromium over CDP. The tool runs in one of two internal modes, selected at call time from the user's `config.toml`:
 
-| Tool | How it sees the page | When it runs |
+| Mode | How it sees the page | When it activates |
 |---|---|---|
-| `browser_automation_dom` | Chrome accessibility tree — text only, no pixels | **Default.** The agent reaches for this first. |
-| `browser_automation_vision` | Screenshots + a visual grounding model that returns pixel coordinates | Escalation path when DOM fails with `element_not_in_tree` / `element_ambiguous`, or when the session's **Vision Mode** toggle is on. |
+| `dom` | Chrome accessibility tree — text only, no pixels | **Default.** Active when `[browser_vision_grounding]` is absent from `config.toml`. |
+| `rich` | Accessibility tree **+** screenshot, with a visual grounding model as the fallback resolver for `target` descriptions | Active when `[browser_vision_grounding]` is present in `config.toml`. |
 
-Both tools speak the same action schema and run inside a bounded sub-loop (`MAX_STEPS = 5`, `TIME_LIMIT_S = 300`). Both use the same viewport (1440 × 900). Only one browser automation call — of either kind — runs at a time, because both acquire `BROWSER_AUTOMATION_LOCK` for their whole execution.
+Both modes run inside a bounded sub-loop (`MAX_STEPS = 5`, `TIME_LIMIT_S = 300`), share the same action schema, and use the same viewport (1440 × 900). Only one `browser_automation` call runs at a time — it acquires `BROWSER_AUTOMATION_LOCK` for its whole execution.
 
 ## Prerequisites
 
 ### Chrome with CDP
 
-Both tools connect to `http://127.0.0.1:9222`.
+Both modes connect to `http://127.0.0.1:9222`.
 
 **Linux / macOS:**
 
@@ -39,68 +39,55 @@ google-chrome \
 
 The profile directory is dedicated (don't reuse your main browser profile). `--disable-blink-features=AutomationControlled` hides the "Chrome is being controlled by automated test software" banner some sites use to gate access.
 
-### Grounding model (vision tool only)
+### Grounding model (rich mode only)
 
-The vision tool expects an OpenAI-compatible endpoint at `http://localhost:5002/v1` serving a visual-grounding model that accepts a screenshot + a natural-language element description and returns pixel coordinates. Any model following the `FN_CALL_TEMPLATE` schema in `browser_automation_vision.py::_build_tool_schema` works; the project is developed against a local Qwen-VL-class grounding model.
+Rich mode expects an OpenAI-compatible endpoint serving a visual-grounding model that accepts a screenshot + a natural-language element description and returns pixel coordinates. Any model following the `FN_CALL_TEMPLATE` schema in `browser_automation.py::_build_tool_schema` works; the project is developed against a local Qwen-VL-class grounding model.
 
-Key constants in `browser_automation_vision.py`:
+The endpoint, model, and API key all come from the `[browser_vision_grounding]` section of `config.toml`. The number of grounding retries per `target` is `_GROUNDING_MAX_ATTEMPTS = 3` (in `browser_automation.py`).
 
-```python
-_GROUNDING_BASE_URL = "http://localhost:5002/v1"
-_GROUNDING_MODEL = "local"
-_GROUNDING_MAX_ATTEMPTS = 3
-```
+If the grounding server is down, `target`-only actions whose fuzzy a11y match also misses will fail; an observation is fed back into the planner so it can rephrase or fall back to `element_index`. DOM mode does not depend on the grounding server.
 
-If the grounding server is down, vision calls raise and the agent falls back to whatever the next action is. The DOM tool does not depend on the grounding server.
-
-## Two-layer design
+## Per-call flow
 
 ```
 Agent main loop
- └─ tool_call: browser_automation_dom({intent, url?})
-     ├─ snapshot_a11y → planner LLM (text-only, sees element indices [N])
-     ├─ parse_model_response → single action
-     ├─ resolve_element_index (DOM) → execute_action (Playwright)
-     ├─ wait_after_action tuned to action type
-     └─ terminate or loop (max 5 steps)
-
-Agent main loop, on DOM failure
- └─ tool_call: browser_automation_vision({intent, url?})
-     ├─ screenshot → planner LLM (vision, sees the pixels)
-     ├─ parse_model_response → action + target description
-     ├─ grounding model → pixel coordinates (resize-aware)
-     ├─ execute_action (Playwright, by coords)
-     ├─ wait_after_action tuned to action type
-     └─ terminate or loop (max 5 steps)
+ └─ tool_call: browser_automation({intent, url?, task?, query?})
+     │
+     ├─ intent=visit_url  → navigate, settle, dump page content
+     ├─ intent=web_search → build Bing URL, then same as visit_url
+     │
+     └─ intent=act_on_page
+         ├─ optional url → navigate_initial_url + settle_after_navigate
+         └─ planner loop (max MAX_STEPS = 5 steps, TIME_LIMIT_S = 300s)
+             ├─ snapshot_a11y (+ screenshot in rich mode)  ── parallel
+             ├─ describe_outcome (silent-fail detector)
+             ├─ planner LLM → free-form thinking + ONE <tool_call>
+             ├─ parse_model_response → action args
+             ├─ loop detection (3 identical or A-B-A-B oscillation)
+             ├─ resolve_action_target (pixel actions only):
+             │     element_index → fuzzy a11y → grounding LLM (rich) → fail
+             ├─ execute_action (Playwright, by coords)
+             ├─ handle_tab_switch + recover_page_if_dead
+             └─ wait_after_action tuned to action family
 ```
 
 ### Why DOM first
 
-- **Fast.** Text snapshots are ~1 KB; screenshots are hundreds of KB.
+- **Fast.** Text snapshots are ~1 KB; screenshots are hundreds of KB even after smart-resize.
 - **Cheap.** No vision tokens, no grounding model round-trip.
 - **Deterministic.** Index-based element targeting is stable across turns in a way that "click the blue button" is not.
 - **Readable logs.** The planner's snapshot is human-auditable.
 
-### Why vision exists
+### Why rich mode exists
 
 - **Iframes with cross-origin docs** don't appear in the top-level accessibility tree.
 - **Canvas apps** (maps, editors, games) have no a11y tree to speak of.
 - **Shadow DOM without role exposure** (custom elements that forget to set ARIA attributes).
 - **Ambiguous labels** — several elements called "Submit" and no unique disambiguator.
 
-### Failure escalation
+### Failure surface
 
-When the DOM tool can't resolve an element it emits a structured failure:
-
-```json
-{
-  "ok": false,
-  "failure_reason": "element_not_in_tree",
-  "summary": "Target 'Open chat window' not present in current accessibility snapshot; may be inside a canvas or cross-origin iframe."
-}
-```
-
-Agents are prompted (in their system prompt) to inspect `failure_reason` and, if it's `element_not_in_tree` or `element_ambiguous`, re-issue the request against `browser_automation_vision`. Other failures (`timeout`, `navigation_blocked`, `invalid_intent`) are not escalated — they indicate a bug in the intent, not a tool mismatch.
+When element resolution fails, `failure_reason` is surfaced in the tool result metadata for observability. Valid values: `element_not_in_tree`, `element_ambiguous`, `page_load_timeout`, `navigation_loop_detected`, `step_budget_exhausted`, `task_infeasible`. The agent-facing output is a human-readable `Status` / `Reason` / `Hint` block — `failure_reason` is not a routing signal.
 
 ## Tool intents (main-agent surface)
 
@@ -117,34 +104,38 @@ Agents are prompted (in their system prompt) to inspect `failure_reason` and, if
 
 ## Action reference (planner sub-agent, inside `act_on_page`)
 
-Both modes (DOM / rich) accept the same planner actions. DOM mode supports the `element_index` form of targeted actions; rich mode additionally accepts `target` (a natural-language description the grounding model resolves).
+Both modes (DOM / rich) accept the same planner actions. DOM mode supports the `element_index` form of targeted actions. Rich mode additionally accepts `target` (a natural-language description resolved via fuzzy a11y match with visual grounding as fallback) — and the rich-mode planner is steered to **default to `target`**, falling back to `element_index` only when a snapshot row is unambiguous. Rich mode is the visual-first mode; if you're in it, expect the planner to describe what it sees.
+
+Every planner action (except `terminate`) must include an `intent` field — a short one-sentence rationale for the action. Missing `intent` is logged and replaced with `"(missing)"` so a turn is not wasted, but the planner system prompt requires it. `terminate` uses `summary` instead.
 
 ### Element-targeted actions
 
 ```json
-{"action": "left_click", "element_index": 7}
-{"action": "mouse_move", "element_index": 3}
+{"action": "left_click", "element_index": 7, "intent": "Open the first search result"}
+{"action": "mouse_move", "element_index": 3, "intent": "Hover the menu to expand it"}
 {"action": "type", "element_index": 2, "text": "hello",
- "press_enter": true, "delete_existing_text": false}
-{"action": "scroll", "element_index": 12, "pixels": -500}
+ "press_enter": true, "delete_existing_text": false,
+ "intent": "Submit a hello query in the search box"}
+{"action": "scroll", "element_index": 12, "pixels": -500, "intent": "Reveal the list below the fold"}
 ```
 
-### Target-by-description actions (rich mode only)
+### Target-by-description actions (rich mode — preferred form)
+
+In rich mode, the planner is prompted to default to `target` and only reach for `element_index` when a snapshot row is unambiguously the right one. The resolver fuzzy-matches `target` against the a11y snapshot first (free); only on a miss does it call the grounding model.
 
 ```json
-{"action": "left_click", "target": "the blue Submit button at the bottom of the form"}
-{"action": "type", "target": "the search box in the top bar", "text": "openclose"}
+{"action": "left_click", "target": "the blue Submit button at the bottom of the form", "intent": "Submit the form"}
+{"action": "type", "target": "the search box in the top bar", "text": "openclose", "intent": "Search for openclose"}
 ```
 
 ### Direct actions
 
 ```json
-{"action": "history_back"}
-{"action": "scroll", "pixels": -500}                                   // whole page
-{"action": "type", "text": "no element_index — whatever is focused"}
-{"action": "key", "keys": ["Enter", "ArrowDown"]}
-{"action": "wait", "time": 5}                                          // max 10
-{"action": "pause_and_memorize_fact", "fact": "User id is 12345"}
+{"action": "history_back", "intent": "Go back to the previous results page"}
+{"action": "scroll", "pixels": -500, "intent": "Scroll down to see more results"}     // whole page
+{"action": "type", "text": "no element_index — whatever is focused", "intent": "Type into the currently focused input"}
+{"action": "key", "keys": ["Enter", "ArrowDown"], "intent": "Confirm and move to the next item"}
+{"action": "wait", "time": 5, "intent": "Wait for results to load"}                   // max 10
 {"action": "terminate", "status": "success", "summary": "..."}
 ```
 
@@ -157,10 +148,14 @@ The planner _cannot_ load a new URL or run a web search on its own. If it needs 
 | Family | Actions | Wait |
 |---|---|---|
 | Full-navigation | `history_back` | `load` (timeout 10 s) + `networkidle` (timeout 3 s), both swallowed on timeout |
-| Possibly-nav | `left_click`, `key` | `networkidle` (timeout 1.5 s), swallowed |
-| Local | everything else | 300 ms sleep |
+| Possibly-nav | `left_click`, `key`, `type` | `networkidle` (timeout 1.5 s), swallowed |
+| Local | `mouse_move`, `scroll`, `wait` | 300 ms sleep |
+
+`type` sits in the possibly-nav family because typing typically fires autocomplete / search XHR, and `press_enter=True` frequently submits a form — both deserve the same settle window as a click.
 
 Long-polling / websocket sites never reach `networkidle`; that's why the waits are all time-bounded — the loop never stalls.
+
+After `navigate_initial_url` (used by both `visit_url` and the optional `url=` argument of `act_on_page`), the shared `settle_after_navigate` helper waits for `load` + `networkidle` + a short sleep so SPA hydration is mostly done before the first snapshot.
 
 ## Grounding endpoint activation (config-driven)
 
@@ -182,32 +177,32 @@ To go back to DOM-only mode, comment out or delete the section and restart the s
 
 > The session-level **Video Compatible Model** toggle (slash command `/video_compatible`, `POST /api/sessions/{session_id}/video-compatible`) is **unrelated** to grounding. It only gates the **Record** button — set it ON when your main LLM accepts video input so that recorded captures can be annotated.
 
-Use cases for enabling rich mode:
+Enabling rich mode flips the planner's default targeting mode: it will describe elements via `target` and lean on the screenshot + grounding pipeline, instead of picking `element_index` rows from the a11y tree. Turn it on when you want the planner driven by what's on screen rather than by snapshot text. Common cases:
 
-- The target site is DOM-hostile (heavy canvas, deep iframes).
+- The target site is DOM-hostile (heavy canvas, deep iframes) and snapshot rows are unreliable.
 - You're running a skill built from a recording where the task builder used visual targets.
 - You're debugging why a DOM run keeps escalating.
+- You generally trust your grounding model and want visual-first behavior across all sites.
 
 ## Limits
 
 | Constant | Value | File |
 |---|---|---|
-| `MAX_STEPS` | 5 | `browser_automation_shared.py` |
+| `MAX_STEPS` | 5 (hard cap 15) | `browser_automation_shared.py` |
 | `TIME_LIMIT_S` | 300 (5 min) | `browser_automation_shared.py` |
 | `VIEWPORT_WIDTH` × `HEIGHT` | 1440 × 900 | `browser_automation_shared.py` |
-| `MAX_SNAPSHOT_ELEMENTS` (DOM) | 150 | `browser_automation_dom.py` |
-| `_SNAPSHOT_PAGE_TEXT_CHARS` (DOM) | 2000 | `browser_automation_dom.py` |
-| `_RECENT_ACTIONS_N` (DOM) | 5 | `browser_automation_dom.py` |
-| `_RECENT_ACTIONS_N` (Vision) | 8 | `browser_automation_vision.py` |
-| `_VLM_CONCURRENCY` (recorder chunks) | 4 | `recorder.py` |
+| `_MAX_SNAPSHOT_ELEMENTS` | 150 | `browser_automation.py` |
+| `_SNAPSHOT_PAGE_TEXT_CHARS` | 2000 | `browser_automation.py` |
+| `_RECENT_ACTIONS_N` | 5 | `browser_automation.py` |
+| `_GROUNDING_MAX_ATTEMPTS` (rich) | 3 | `browser_automation.py` |
 
-Five steps per invocation is strict. If a task needs more, design it as several agent turns — the main agent can call the tool again.
+Five steps per invocation is the default. If a task needs more, either bump `max_steps` (capped at 15) on the call or design it as several agent turns — the main agent can call the tool again.
 
 ## Debugging
 
 ### See what the planner saw
 
-With `OPENCLOSE_DEBUG_LLM=1`, every LLM call the tool makes (planner, grounding, merger) is appended to `<config_dir>/<project_name>/llm_debug.jsonl`. The `source` field distinguishes `browser_automation_dom.planner`, `browser_automation_vision.planner`, `browser_automation_vision.grounding`, etc.
+With `OPENCLOSE_DEBUG_LLM=1`, every LLM call the tool makes (planner, grounding) is appended to `<config_dir>/<project_name>/llm_debug.jsonl`. The `source` field distinguishes `browser_automation.planner.dom`, `browser_automation.planner.rich`, and `browser_automation.grounding`.
 
 ### Replay an action manually
 
@@ -215,18 +210,19 @@ The tool's `execute_action` is the single funnel. For a one-off debug, start a P
 
 ### Common failure reasons
 
-- `element_not_in_tree` — target isn't in the a11y snapshot. Escalate to vision.
-- `element_ambiguous` — multiple matches with the same label; disambiguate the intent or escalate to vision.
-- `timeout` — the action itself timed out (navigation never completed within 10 s). Likely a site problem; retry with a clearer intent or manual `wait`.
-- `navigation_blocked` — Chromium refused the navigation (e.g. downloadable file, `javascript:` URL).
-- `invalid_intent` — the planner's first turn returned non-JSON or a schema-violating action.
+- `element_not_in_tree` — `element_index` not in current snapshot or `target` not found in the a11y tree (and, in rich mode, the grounding model couldn't locate it either). In dom mode, enable rich mode if the element is visible on screen but not in the a11y tree.
+- `element_ambiguous` — multiple a11y rows are similarly good matches for the `target`; rephrase with more specificity (color, position, exact label).
+- `page_load_timeout` — `navigate_initial_url` couldn't load the URL within 15 s. Likely a site problem; retry with a clearer URL or after a manual `wait`.
+- `navigation_loop_detected` — the planner repeated the same `(action, element_index_or_target)` three times, or oscillated A-B-A-B with no DOM change. The next call should pick a different strategy.
+- `step_budget_exhausted` — ran out of `MAX_STEPS` or hit `TIME_LIMIT_S`. Bump `max_steps` (≤15) or split the task across multiple calls.
+- `task_infeasible` — the planner itself terminated with `status:"failure"` and a summary; check the summary for what it tried.
 
 ## API reference
 
 The tools are called via the normal tool-calling flow; there's no HTTP endpoint for "run a browser action" directly. To invoke them:
 
 - **From chat**: the agent decides. Write an intent like "log in to example.com with the credentials in `$creds` and submit the form"; the agent will pick a tool.
-- **From a skill**: list `browser_automation_dom` (and optionally `browser_automation_vision`) under `required_tools` in the skill's frontmatter. The skill runner pre-grants ALLOW permission for those tool names; the agent calls them in the normal way during the headless run.
+- **From a skill**: list `browser_automation` under `required_tools` in the skill's frontmatter. The skill runner pre-grants ALLOW permission for that tool name; the agent calls it in the normal way during the headless run.
 - **From a job**: include such a skill in the job's `skills` list.
 
 Related routes (session-level):
