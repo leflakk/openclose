@@ -1,6 +1,6 @@
 [project]
 name = "openclose"
-version = "1.0.0"
+version = "1.0.1"
 description = "A Python AI coding assistant — local-first, OpenAI-compatible"
 readme = "README.md"
 license = "MIT"

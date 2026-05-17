@@ -53,7 +53,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
-    app = FastAPI(title="OpenClose", version="1.0.0", lifespan=_lifespan)
+    app = FastAPI(title="OpenClose", version="1.0.1", lifespan=_lifespan)
 
     # Mount static files
     if _STATIC_DIR.is_dir():
