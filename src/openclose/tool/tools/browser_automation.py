@@ -48,9 +48,9 @@ from openclose.tool.tools.browser_automation_shared import (
     fuzzy_match_a11y,
     dump_page_content, format_tool_output,
     write_navigation_dump,
-    validate_intent, run_goto_intent,
+    validate_intent, run_goto_intent, run_web_search_intent,
     describe_outcome, wait_after_action,
-    navigate_initial_url,
+    navigate_initial_url, settle_after_navigate,
     handle_tab_switch, recover_page_if_dead,
     acquire_singleton_browser,
     _pick_or_create_page,
@@ -186,18 +186,14 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                             "on the screen.\n"
                             "* `left_click`: Click the left mouse button.\n"
                             "* `scroll`: Performs a scroll of the mouse scroll wheel.\n"
-                            "* `visit_url`: Visit a specified URL.\n"
-                            "* `web_search`: Perform a web search with a specified query.\n"
                             "* `history_back`: Go back to the previous page in the browser history.\n"
-                            "* `pause_and_memorize_fact`: Pause and memorize a fact for future "
-                            "reference.\n"
                             "* `wait`: Wait specified seconds for the change to happen.\n"
                             "* `terminate`: Terminate the current task and report its completion status."
                         ),
                         "enum": [
                             "key", "type", "mouse_move", "left_click", "scroll",
-                            "visit_url", "web_search", "history_back",
-                            "pause_and_memorize_fact", "wait", "terminate",
+                            "history_back",
+                            "wait", "terminate",
                         ],
                         "type": "string",
                     },
@@ -238,21 +234,6 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                         ),
                         "type": "number",
                     },
-                    "url": {
-                        "description": "The URL to visit. Required only by `action=visit_url`.",
-                        "type": "string",
-                    },
-                    "query": {
-                        "description": "The query to search for. Required only by `action=web_search`.",
-                        "type": "string",
-                    },
-                    "fact": {
-                        "description": (
-                            "The fact to remember for the future. "
-                            "Required only by `action=pause_and_memorize_fact`."
-                        ),
-                        "type": "string",
-                    },
                     "time": {
                         "description": "The seconds to wait. Required only by `action=wait`.",
                         "type": "number",
@@ -263,6 +244,14 @@ def _build_tool_schema(resized_width: int, resized_height: int) -> str:
                         ),
                         "type": "string",
                         "enum": ["success", "failure"],
+                    },
+                    "intent": {
+                        "description": (
+                            "Short one-sentence rationale for this action — what "
+                            "you intend to accomplish. Required for every action "
+                            "except `terminate` (which uses `summary`)."
+                        ),
+                        "type": "string",
                     },
                 },
                 "required": ["action"],
@@ -310,18 +299,21 @@ with the current snapshot, the snapshot is right.
 
 _PROMPT_HEAD_RICH = """\
 You are the planning layer of a browser automation agent operating in \
-rich mode (accessibility snapshot + screenshot).
+rich mode (screenshot + accessibility snapshot).
 
 Each turn you are given:
-  1. An accessibility snapshot listing all interactive elements on the \
-current page with sequential indices [0], [1], [2], etc. — your PRIMARY \
-view; reference elements by ``element_index`` whenever possible.
-  2. A fresh screenshot of the current viewport — your VISUAL fallback \
-for elements that are visible but missing from the snapshot (canvas, \
-custom widgets, opaque iframes); reference those by ``target`` description.
+  1. A fresh screenshot of the current viewport — your PRIMARY view. \
+Look here first and describe what you want to act on via a ``target`` \
+description.
+  2. An accessibility snapshot listing interactive elements with \
+sequential indices [0], [1], [2], etc. — a free, exact shortcut you \
+may use when the right row is obvious from its label.
 
-Both signals are authoritative. Ignore any mental model from earlier turns; \
-if it disagrees with these inputs, these inputs are right.
+Rich mode was enabled deliberately so you can act on what you SEE. \
+Prefer ``target`` descriptions; reach for ``element_index`` only when \
+the snapshot row is unambiguous and you want the cheapest lookup. \
+Ignore any mental model from earlier turns — if it disagrees with these \
+inputs, these inputs are right.
 """
 
 _PROMPT_BODY_COMMON = """\
@@ -334,37 +326,28 @@ getting to the right page.
 
 # Action schema
 Emit exactly ONE action per turn as a JSON object inside a <tool_call> \
-block.
+block. Every action (except ``terminate``) MUST include an ``intent`` \
+field — one short sentence stating what you're trying to accomplish. \
+``terminate`` uses ``summary`` instead.
 
 ## Element-targeted actions
-For these actions, you can EITHER reference an element by its accessibility \
-``element_index`` OR (rich mode only) describe it as a ``target`` string. \
-Strongly prefer ``element_index`` whenever the element appears in the \
-snapshot — it is free and exact. Use ``target`` only when the element is \
-visible on screen but missing from the snapshot list.
+``left_click``, ``mouse_move``, ``type``, ``scroll`` take either \
+``element_index: N`` (exact lookup against the snapshot) or — rich mode \
+only — ``target: "<description>"`` (natural-language description, \
+resolved via fuzzy a11y match with visual grounding as fallback). \
+Mode-specific guidance below tells you which to reach for first.
 
-- ``{"action": "left_click", "element_index": N}`` OR \
-``{"action": "left_click", "target": "<element description>"}``  \
-(for buttons, links, tabs)
-- ``{"action": "mouse_move", "element_index": N}`` OR \
-``{"action": "mouse_move", "target": "<element description>"}``
-- ``{"action": "type", "element_index": N, "text": "...", \
-"press_enter": true|false, "delete_existing_text": true|false}`` OR \
-``{"action": "type", "target": "<input description>", "text": "...", \
-"press_enter": true|false, "delete_existing_text": true|false}``  \
-STRONGLY PREFER this atomic form for typing into any input / textarea / \
-contenteditable. It clicks, focuses, and types in one step. Do NOT \
-decompose it into a separate ``left_click`` followed by a focusless \
-``type`` — focus is not reliably preserved across turns, especially on \
-modern React / shadow-DOM inputs.
-- ``{"action": "scroll", "element_index": N, "pixels": <int>}`` OR \
-``{"action": "scroll", "target": "<container description>", "pixels": \
-<int, positive=up, negative=down>}``  (for whole-page scrolling, omit \
-both ``element_index`` and ``target``)
+Specific params per action:
+- ``left_click`` — nothing else (for buttons, links, tabs).
+- ``mouse_move`` — nothing else.
+- ``type`` — ``text``, ``press_enter`` (bool), ``delete_existing_text`` \
+(bool). STRONGLY PREFER this atomic form over a separate ``left_click`` \
+followed by a focusless ``type`` — focus is not reliably preserved across \
+turns, especially on modern React / shadow-DOM inputs.
+- ``scroll`` — ``pixels: <int>`` (positive=up, negative=down). For \
+whole-page scrolling, omit both ``element_index`` and ``target``.
 
 ## Direct actions (no element resolution, executed as-is)
-- ``{"action": "visit_url", "url": "https://..."}``
-- ``{"action": "web_search", "query": "..."}``  (uses Bing)
 - ``{"action": "history_back"}``
 - ``{"action": "scroll", "pixels": <int>}``  (whole page)
 - ``{"action": "type", "text": "...", "press_enter": true|false}``  \
@@ -373,7 +356,6 @@ LAST-RESORT fallback. For normal typing, always use ``type`` with \
 ``element_index`` or ``target`` above.)
 - ``{"action": "key", "keys": ["Enter"|"Escape"|"Tab"|"ArrowDown"|...]}``
 - ``{"action": "wait", "time": <seconds, max 10>}``
-- ``{"action": "pause_and_memorize_fact", "fact": "<fact to remember>"}``
 - ``{"action": "terminate", "status": "success"|"failure", "summary": \
 "<short description of what page you reached and why you believe it \
 contains the requested information>"}``
@@ -390,105 +372,66 @@ elements, then look at the refreshed snapshot on the next turn.
   - If you need to interact with a dynamically loaded element, try \
 ``wait`` first then check the refreshed snapshot.
   - If the element you need is not in the interactive list even after \
-scrolling, terminate with status:"failure" — the user can enable vision \
-mode to retry with screenshot + grounding.
+scrolling, terminate with status:"failure".
 """
 
 _PROMPT_TARGET_GUIDE_RICH = """\
 
-# Choosing element_index vs target
-Prefer ``element_index`` whenever the element appears in the snapshot \
-(``[N]`` shown next to it). It's resolved free, with no LLM cost.
+# Choosing target vs element_index
+You are in rich mode because the operator wants you to use the \
+screenshot. Default to ``target`` for any element you can see — it lets \
+you describe what's on screen (color, label, position, role) and is \
+robust to a11y-tree drift, missing rows, canvases, custom widgets, and \
+opaque iframes. The resolver first fuzzy-matches your ``target`` \
+against the snapshot (free); only on a miss does it call the grounding \
+model, so most ``target`` calls cost the same as ``element_index``. \
+Prefer ``target`` as your default.
 
-Use ``target`` (description) only when the element is clearly visible on \
-the screenshot but missing from the snapshot — typical for canvas-rendered \
-UIs, custom widgets, opaque iframes. The system first tries to fuzzy-match \
-your ``target`` against the snapshot; only if that fails does it call a \
-separate visual grounding model.
+Reach for ``element_index: N`` only when BOTH of these hold:
+  - The snapshot row is unambiguous and obviously the right one, AND
+  - You want to skip the fuzzy match entirely (cheapest path).
 
-# Target descriptions must be unambiguous
-The grounding model only sees the screenshot + your ``target`` string. \
-Write descriptions a stranger could follow:
-  - GOOD: "the blue 'Sign in' button in the top-right header"
-  - GOOD: "the search input field at the top of the page with placeholder 'Search Wikipedia'"
-  - GOOD: "the third result card in the search results list"
-  - BAD: "the button", "the input", "it", "there"
-Include at least one of: color, label text, position (top/bottom/left/right), \
-or role (button/input/link/menu item).
-
-# When grounding fails (target not located)
-If the resolver reports it could not locate your ``target``, try these \
-strategies in order:
-  1. REPHRASE the target more precisely — include color, position, \
-and exact label text.
-  2. SCROLL to reveal the element if it may be below the fold.
-  3. Use Tab cycling: ``{"action": "key", "keys": ["Tab"]}`` to move \
-focus through the page, then use focusless type: \
-``{"action": "type", "text": "...", "press_enter": false}`` to type \
-into whatever element received focus. WARNING: Tab MOVES focus — \
-NEVER use it after a successful action.
-  4. Click a NEARBY visible element (label, heading, sibling) first, \
-then Tab into the target field.
-  5. Try a completely different approach (``visit_url``, \
-``web_search``, ``history_back``).
-  6. If nothing works after 2 total attempts, ``terminate`` with \
-``status:"failure"``.
-
-# Typing tasks
-When the task asks you to type/enter/fill text into an input or \
-textarea, your FIRST action should almost always be ``type`` with \
-``element_index`` (preferred) or ``target`` pointing at that input — \
-not ``left_click`` first and ``type`` later. The atomic form clicks, \
-focuses, and types in one executor step. Separating click and \
-type across turns commonly breaks on modern inputs because focus \
-is lost between planner turns.
+When you use ``target``, describe it unambiguously: include color, \
+label text, position (top/bottom/left/right), or role \
+(button/input/link/menu item). Avoid bare phrases like "the button" or \
+"it". If grounding fails, an observation will be appended to your next \
+turn explaining recovery options — read and follow it.
 """
 
 _PROMPT_TAIL = """\
 
 # Layer awareness
-Elements are grouped by visual layer in the snapshot. The ACTIVE LAYER \
-(topmost overlay/modal) is shown first — if present, its action buttons \
-(e.g. "Add", "Submit", "Confirm") are almost always what you need to \
-interact with next. BACKGROUND elements may be blocked by the overlay \
-and unclickable until the overlay is dismissed.
+Modal/overlay layers appear first in the snapshot. Their action buttons \
+are usually the next interaction; background elements may be blocked \
+until the overlay closes.
 
 # Rules
-- Always study the current page state before acting. Check that the \
-previous action had the expected effect (e.g. new page loaded, new elements \
-appeared). If not, diagnose and adapt — do NOT blindly repeat.
-- Check "Outcome since last snapshot" before acting. If it says "no \
+- Check "Outcome since last snapshot" before acting. If it reports "no \
 changes detected", your last action silently failed — do NOT repeat it. \
-Check for an overlay, try a different element, scroll to reveal the \
-element, or ``terminate`` with ``status:"failure"``.
-- Always scan the "Recent actions" list before deciding your next move. \
-It is your ONLY memory of previous turns — use it to detect loops. If you \
-see the same action repeating, OR a short cycle of 2–3 actions rotating \
-without the snapshot meaningfully changing, you are stuck in a \
-non-working pattern. Do NOT continue the pattern: change strategy entirely \
-(different element/target, scroll, wait, ``history_back``, re-navigate via \
-``visit_url``/``web_search``, or ``terminate`` with ``status:"failure"`` \
-if truly blocked).
-- HARD LIMIT: Do not repeat the SAME action on the same target/element \
-more than 2 times. After 2 failed attempts, you MUST either try a \
-completely different approach or terminate with status:"failure". \
-Continuing to repeat wastes the step budget.
-- Use ``pause_and_memorize_fact`` ONLY for navigation-relevant notes. \
-Do NOT use it to extract or transcribe page content — content extraction \
-happens automatically after you terminate.
-- NEVER use Google for web searches — always use Bing. Use the \
-``web_search`` action (which routes through Bing) or navigate to \
-bing.com manually. Do NOT visit google.com.
+Try a different element, scroll, dismiss any overlay, or ``terminate`` \
+with ``status:"failure"``.
+- Scan "Recent actions" before deciding. Don't repeat the same \
+``(action, element_index_or_target)`` more than 2 times — a 3rd \
+identical repetition triggers automatic loop termination. Switch \
+strategy (different element/target, scroll, wait, ``history_back``) \
+or ``terminate``.
+- You CANNOT load new pages or run web searches yourself — those are \
+the main agent's responsibility, exposed as the ``visit_url`` and \
+``web_search`` tool intents. If the requested information is not \
+reachable from the current page, ``terminate`` with \
+``status:"failure"`` and explain what URL or search would help.
 - When you have navigated to the page that contains the requested \
 information, emit ``terminate`` with ``status:"success"``. You do NOT \
 need to read or summarize the page content — just confirm you arrived \
 at the right page. If you are stuck and cannot reach the target page, \
 emit ``terminate`` with ``status:"failure"`` and explain why.
-- Output format — free-form thinking first, then ONE <tool_call> block:
+- Output format — free-form thinking first, then ONE <tool_call> block. \
+The action object MUST include ``intent`` (or ``summary`` for \
+``terminate``):
 
 <reason about what you see, what you already tried, and what to do next>
 <tool_call>
-{"name": "browser_automation", "arguments": {"action": "...", ...}}
+{"name": "browser_automation", "arguments": {"action": "left_click", "element_index": 5, "intent": "Open the search results page"}}
 </tool_call>
 """
 
@@ -522,7 +465,6 @@ UNIFIED_PLANNER_SYSTEM_PROMPT_RICH = _build_planner_system_prompt("rich")
 def _build_planner_user_turn(
     step: int,
     task: str,
-    memory: list[str],
     steps_log: list[dict[str, Any]],
     current_url: str,
     snapshot_text: str,
@@ -553,10 +495,6 @@ def _build_planner_user_turn(
             f"page. If the task only required reaching this URL, terminate "
             f"with status:success immediately."
         )
-    if memory:
-        lines.append("")
-        lines.append("Remembered facts:")
-        lines.extend(f"- {f}" for f in memory)
     lines.append("")
     lines.append(
         "Recent actions (text history — this is the only memory of previous "
@@ -857,8 +795,7 @@ def _grounding_failure_message(action_args: dict[str, Any]) -> str:
         f"to type into whatever received focus.\n"
         f"4. Click a NEARBY visible element (label, heading, sibling) first, "
         f"then Tab into the target.\n"
-        f"5. Try a completely different approach (visit_url, web_search, "
-        f"history_back).\n"
+        f"5. Try history_back to recover, or terminate.\n"
         f"6. If nothing works after 2 attempts, terminate with "
         f'status:"failure".'
     )
@@ -932,6 +869,42 @@ async def resolve_action_target(
 # Per-step planner loop.
 # ---------------------------------------------------------------------------
 
+def _detect_loop(
+    sigs: list[tuple[str, Any]],
+    outcomes: list[str],
+) -> str | None:
+    """Detect a planner loop. Returns a termination message or None.
+
+    Two patterns:
+      1. The last 3 signatures are identical.
+      2. The last 4 form an A-B-A-B oscillation AND the last 2 outcomes
+         both report "no changes detected" — gating prevents false positives
+         on legitimate tab-toggling workflows that actually mutate the page.
+
+    The signature is ``(action, element_index_or_target)``; intent is
+    deliberately excluded because free-form prose hurts detection accuracy.
+    """
+    if len(sigs) >= 3 and sigs[-1] == sigs[-2] == sigs[-3]:
+        action = sigs[-1][0]
+        return (
+            f"Loop detected: '{action}' repeated 3 times "
+            f"on same target. Terminating."
+        )
+    if (
+        len(sigs) >= 4
+        and sigs[-1] == sigs[-3]
+        and sigs[-2] == sigs[-4]
+        and sigs[-1] != sigs[-2]
+        and len(outcomes) >= 2
+        and all("no changes detected" in o for o in outcomes[-2:])
+    ):
+        return (
+            "Loop detected: oscillating between two actions with no "
+            "page change. Terminating."
+        )
+    return None
+
+
 async def _run_navigate_loop(
     *,
     mode: str,
@@ -951,8 +924,8 @@ async def _run_navigate_loop(
     Returns ``(page, final_status, last_thinking, failure_reason)``.
     Caller is responsible for the post-loop dump and ToolResult build.
     """
-    memory: list[str] = []
     recent_action_sigs: list[tuple[str, Any]] = []
+    recent_outcomes: list[str] = []
     last_thinking = ""
     final_status = "Max steps reached without termination."
     failure_reason: FailureReason | None = None
@@ -992,13 +965,14 @@ async def _run_navigate_loop(
         action_outcome = describe_outcome(
             prev_snapshot_text, snapshot_text, prev_url, current_url,
         )
+        if action_outcome:
+            recent_outcomes.append(action_outcome)
         prev_snapshot_text = snapshot_text
         prev_url = current_url
 
         user_turn = _build_planner_user_turn(
             step=step,
             task=task,
-            memory=memory,
             steps_log=ctx.steps_log,
             current_url=current_url,
             snapshot_text=snapshot_text,
@@ -1062,7 +1036,7 @@ async def _run_navigate_loop(
         ctx.log_call(tc, "Planner")
 
         # 4b. Loop detection — unified signature: element_index OR target.
-        if action not in ("terminate", "pause_and_memorize_fact", "scroll"):
+        if action not in ("terminate", "scroll"):
             sig_target = (
                 action_args.get("element_index")
                 if action_args.get("element_index") is not None
@@ -1070,16 +1044,9 @@ async def _run_navigate_loop(
             )
             action_sig = (action, sig_target)
             recent_action_sigs.append(action_sig)
-            if (
-                len(recent_action_sigs) >= 3
-                and recent_action_sigs[-1]
-                == recent_action_sigs[-2]
-                == recent_action_sigs[-3]
-            ):
-                final_status = (
-                    f"Loop detected: '{action}' repeated 3 times "
-                    f"on same target. Terminating."
-                )
+            loop_msg = _detect_loop(recent_action_sigs, recent_outcomes)
+            if loop_msg is not None:
+                final_status = loop_msg
                 failure_reason = FailureReason.NAVIGATION_LOOP_DETECTED
                 await ctx.emit_result(tc, final_status, "Planner")
                 ctx.log_result(tc, final_status, "Planner")
@@ -1107,17 +1074,6 @@ async def _run_navigate_loop(
                 action, action_args, "task terminated by planner",
             )
             break
-
-        if action == "pause_and_memorize_fact":
-            fact = action_args.get("fact", "")
-            memory.append(fact)
-            result_text = f"Memorized: {fact}"
-            await ctx.emit_result(tc, result_text, "Planner")
-            ctx.log_result(tc, result_text, "Planner")
-            await ctx.emit_grounding_skip(
-                action, action_args, "fact memorized, no browser action",
-            )
-            continue
 
         # 6. Resolve target if pixel action.
         needs_resolution = action in _PIXEL_ACTIONS and (
@@ -1235,10 +1191,11 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
         intent: str = "",
         task: str = "",
         url: str = "",
+        query: str = "",
         max_steps: int = MAX_STEPS,
         **kwargs: object,
     ) -> ToolResult:
-        err = validate_intent(intent, task, url)
+        err = validate_intent(intent, task, url, query)
         if err:
             return ToolResult(error=err)
 
@@ -1300,7 +1257,7 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 return ToolResult(error=f"Failed to start browser: {e}")
 
             try:
-                if intent == "goto_page":
+                if intent == "visit_url":
                     page, result = await run_goto_intent(
                         browser_context, page, url,
                         ctx=ctx,
@@ -1308,7 +1265,15 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                     )
                     return result
 
-                # navigate intent.
+                if intent == "web_search":
+                    page, result = await run_web_search_intent(
+                        browser_context, page, query,
+                        ctx=ctx,
+                        project_dir=project_dir,
+                    )
+                    return result
+
+                # act_on_page intent.
                 from openclose.provider.provider import get_provider
                 planner_provider = get_provider()
                 planner_model = (await planner_provider.detect_model()) or ""
@@ -1331,6 +1296,11 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
 
                 if url:
                     page = await navigate_initial_url(browser_context, page, url)
+                    # Match visit_url's settle so the first planner turn
+                    # sees a hydrated page rather than a half-loaded
+                    # shell — biggest single cause of wasted first-step
+                    # snapshots on SPA-heavy sites.
+                    await settle_after_navigate(page)
 
                 page, final_status, last_thinking, failure_reason = (
                     await _run_navigate_loop(
@@ -1405,42 +1375,50 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
     return Tool(
         name="browser_automation",
         description=(
-            "USE IT TO OPEN A KNOWN URL OR TO DRIVE CHROME VIA CDP. "
-            "`goto_page` opens a URL and returns navigation data "
-            "while the visible text is always saved to a markdown file "
-            "so to get it, use `grep` and `read` on the path printed after `Page content saved at:`. "
-            "`navigate` hands a `task` to a sub-agent "
-            "that performs navigation tasks via accessibility tree. "
-            "Always split tasks into smaller objectives to get better results. "
-            "CANNOT BE CALLED IN PARALLEL."
+            "USE IT TO OPEN A URL, RUN A WEB SEARCH, OR DRIVE CHROME VIA CDP. "
+            "`visit_url` opens a URL and returns navigation data; "
+            "`web_search` runs a Bing search for `query` and returns the "
+            "results page in the same shape. In both cases the visible "
+            "page text is always saved to a markdown file — to read it, "
+            "use `grep` and `read` on the path printed after "
+            "`Page content saved at:`. "
+            "`act_on_page` hands a `task` to a planner sub-agent that "
+            "interacts with the already-loaded page (clicks, forms, "
+            "dropdowns) via the accessibility tree. "
+            "VERY IMPORTANT: YOU MUST ALWAYS SPLIT TASKS INTO VERY SMALL OBJECTIVES "
+            "WHEN CALLING THIS TOOL AND IT CANNOT BE CALLED CONCURRENTLY."
         ),
         parameters=[
             ToolParameter(
                 name="intent",
                 description=(
                     "What this call should do. "
-                    "`goto_page`: load `url`, dump the page, and return "
+                    "`visit_url`: load `url`, dump the page, and return "
                     "the URL, title, interactive elements, links, and "
                     "iframes; the full page text is saved to a markdown "
                     "file (path printed in the output) — recover specific "
                     "text from it with `grep` and `read`. "
-                    "`navigate`: hand `task` to a planner sub-agent that "
-                    "interacts with the page (clicks, forms, dropdowns) "
-                    "until the goal is reached; on success returns a "
-                    "short confirmation, on failure returns the same "
-                    "content as `goto_page` plus a `failure_reason:` "
-                    "line for diagnosis."
+                    "`web_search`: run a Bing search for `query` and "
+                    "return the same shape as `visit_url` for the "
+                    "results page. "
+                    "`act_on_page`: hand `task` to a planner sub-agent "
+                    "that interacts with the page (clicks, forms, "
+                    "dropdowns) until the goal is reached; on success "
+                    "returns a short confirmation, on failure returns "
+                    "the same content as `visit_url` plus a "
+                    "`failure_reason:` line for diagnosis."
                 ),
-                enum=["goto_page", "navigate"],
+                enum=["visit_url", "act_on_page", "web_search"],
             ),
             ToolParameter(
                 name="task",
                 description=(
-                    "Goal description for `intent='navigate'` — required "
-                    "there, rejected for `goto_page`. State the objective "
-                    "in plain language (\"add an item to the cart\", "
-                    "\"find the pricing page\"), not the UI steps; the "
-                    "planner decides what to click."
+                    "Goal description for `intent='act_on_page'` — "
+                    "required there, rejected for `visit_url` and "
+                    "`web_search`. State the objective in plain language "
+                    "(\"add an item to the cart\", \"find the pricing "
+                    "page\"), not the UI steps; the planner decides what "
+                    "to click."
                 ),
                 required=False,
             ),
@@ -1448,10 +1426,21 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 name="url",
                 description=(
                     "Target URL (must include scheme, e.g. https://). "
-                    "Required for `goto_page`. Optional for `navigate` as "
-                    "a starting point — when omitted, navigation begins "
-                    "from the current page. If the browser is already on "
-                    "this URL, the navigation step is skipped."
+                    "Required for `visit_url`. Optional for "
+                    "`act_on_page` as a starting point — when omitted, "
+                    "navigation begins from the current page. If the "
+                    "browser is already on this URL, the navigation step "
+                    "is skipped. Rejected for `web_search`."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="query",
+                description=(
+                    "Search query for `intent='web_search'` — required "
+                    "there, rejected for `visit_url` and `act_on_page`. "
+                    "The query is sent to Bing as a normal search "
+                    "string; no operators are required."
                 ),
                 required=False,
             ),
@@ -1460,10 +1449,10 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
                 type="integer",
                 description=(
                     "Maximum number of planner turns for "
-                    "`intent='navigate'`. Increase for multi-step flows "
-                    "(forms, multi-page wizards); leave at default for "
-                    "short navigations. Ignored for `goto_*` intents. "
-                    "Default 5, hard cap 15."
+                    "`intent='act_on_page'`. Increase for multi-step "
+                    "flows (forms, multi-page wizards); leave at default "
+                    "for short navigations. Ignored for `visit_url` and "
+                    "`web_search`. Default 5, hard cap 15."
                 ),
                 required=False,
             ),

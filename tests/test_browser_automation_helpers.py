@@ -96,7 +96,15 @@ def test_build_tool_schema() -> None:
     params = schema["function"]["parameters"]["properties"]
     assert "action" in params
     assert "coordinate" in params
-    assert "url" in params
+    # visit_url / web_search are now tool intents, not planner actions —
+    # the grounding tool schema must not advertise `url` or `query`, nor
+    # list those actions in the enum.
+    assert "url" not in params
+    assert "query" not in params
+    action_enum = params["action"]["enum"]
+    assert "visit_url" not in action_enum
+    assert "web_search" not in action_enum
+    assert "history_back" in action_enum
 
 
 # ── _build_system_prompt ─────────────────────────────────────────────────────
@@ -169,6 +177,42 @@ def test_parse_model_response_bad_structure() -> None:
     assert args is None
 
 
+def test_parse_model_response_injects_placeholder_intent() -> None:
+    from openclose.tool.tools.browser_automation_shared import parse_model_response as _parse_model_response
+
+    text = '<tool_call>\n{"name": "browser_automation", "arguments": {"action": "left_click", "element_index": 3}}\n</tool_call>'
+    _, args = _parse_model_response(text)
+    assert args is not None
+    assert args["intent"] == "(missing)"
+
+
+def test_parse_model_response_preserves_explicit_intent() -> None:
+    from openclose.tool.tools.browser_automation_shared import parse_model_response as _parse_model_response
+
+    text = '<tool_call>\n{"name": "browser_automation", "arguments": {"action": "left_click", "element_index": 3, "intent": "Open the result"}}\n</tool_call>'
+    _, args = _parse_model_response(text)
+    assert args is not None
+    assert args["intent"] == "Open the result"
+
+
+def test_parse_model_response_terminate_does_not_require_intent() -> None:
+    from openclose.tool.tools.browser_automation_shared import parse_model_response as _parse_model_response
+
+    text = '<tool_call>\n{"name": "browser_automation", "arguments": {"action": "terminate", "status": "success", "summary": "done"}}\n</tool_call>'
+    _, args = _parse_model_response(text)
+    assert args is not None
+    assert "intent" not in args
+
+
+def test_parse_model_response_treats_whitespace_intent_as_missing() -> None:
+    from openclose.tool.tools.browser_automation_shared import parse_model_response as _parse_model_response
+
+    text = '<tool_call>\n{"name": "browser_automation", "arguments": {"action": "left_click", "element_index": 3, "intent": "   "}}\n</tool_call>'
+    _, args = _parse_model_response(text)
+    assert args is not None
+    assert args["intent"] == "(missing)"
+
+
 # ── _summarise_recent_actions ────────────────────────────────────────────────
 
 def test_summarise_recent_actions_empty() -> None:
@@ -185,17 +229,16 @@ def test_summarise_recent_actions_with_steps() -> None:
         {
             "type": "tool_call", "subagent_label": "Planner",
             "tool_call_id": "tc1",
-            "content": json.dumps({"action": "visit_url", "url": "https://example.com"}),
+            "content": json.dumps({"action": "history_back"}),
         },
         {
             "type": "tool_result", "subagent_label": "Planner",
             "tool_call_id": "tc1",
-            "content": "visit_url(https://example.com)",
+            "content": "history_back()",
         },
     ]
     result = _summarise_recent_actions(steps)
-    assert "visit_url" in result
-    assert "example.com" in result
+    assert "history_back" in result
 
 
 def test_summarise_recent_actions_various_types() -> None:
@@ -203,9 +246,9 @@ def test_summarise_recent_actions_various_types() -> None:
 
     steps: list[dict[str, Any]] = [
         {"type": "tool_call", "subagent_label": "Planner", "tool_call_id": "tc1",
-         "content": json.dumps({"action": "web_search", "query": "test"})},
+         "content": json.dumps({"action": "history_back"})},
         {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc1",
-         "content": "web_search('test')"},
+         "content": "history_back()"},
         {"type": "tool_call", "subagent_label": "Planner", "tool_call_id": "tc2",
          "content": json.dumps({"action": "type", "text": "hello world"})},
         {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc2",
@@ -218,21 +261,16 @@ def test_summarise_recent_actions_various_types() -> None:
          "content": json.dumps({"action": "scroll", "pixels": 300})},
         {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc4",
          "content": "scroll(300)"},
-        {"type": "tool_call", "subagent_label": "Planner", "tool_call_id": "tc5",
-         "content": json.dumps({"action": "pause_and_memorize_fact", "fact": "Important fact"})},
-        {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc5",
-         "content": "memorized"},
         {"type": "tool_call", "subagent_label": "Planner", "tool_call_id": "tc6",
          "content": json.dumps({"action": "left_click", "target": "button"})},
         {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc6",
          "content": "left_click(100, 200)"},
     ]
     result = _summarise_recent_actions(steps)
-    assert "web_search" in result
+    assert "history_back" in result
     assert "text=" in result
     assert "keys=" in result
     assert "pixels=" in result
-    assert "fact=" in result
     assert "target=" in result
 
 
@@ -301,26 +339,13 @@ def test_summarise_truncates_long_text() -> None:
     assert "…" in result
 
 
-def test_summarise_truncates_long_fact() -> None:
-    from openclose.tool.tools.browser_automation_shared import summarise_recent_actions as _summarise_recent_actions
-
-    steps: list[dict[str, Any]] = [
-        {"type": "tool_call", "subagent_label": "Planner", "tool_call_id": "tc1",
-         "content": json.dumps({"action": "pause_and_memorize_fact", "fact": "f" * 80})},
-        {"type": "tool_result", "subagent_label": "Planner", "tool_call_id": "tc1",
-         "content": "memorized"},
-    ]
-    result = _summarise_recent_actions(steps)
-    assert "…" in result
-
-
 # ── _build_planner_user_turn ───────────────────────────────────────────────────
 
 def test_build_planner_user_turn_step_zero_rich() -> None:
     from openclose.tool.tools.browser_automation import _build_planner_user_turn
 
     msg = _build_planner_user_turn(
-        step=0, task="Find the button", memory=[],
+        step=0, task="Find the button",
         steps_log=[], current_url="https://example.com",
         snapshot_text='[0] button "Click me"',
         img_b64="abc123", mode="rich",
@@ -338,15 +363,13 @@ def test_build_planner_user_turn_later_step_rich() -> None:
     from openclose.tool.tools.browser_automation import _build_planner_user_turn
 
     msg = _build_planner_user_turn(
-        step=3, task="Find the button", memory=["fact1", "fact2"],
+        step=3, task="Find the button",
         steps_log=[], current_url="https://example.com",
         snapshot_text='[0] button "Click me"',
         img_b64="abc", mode="rich",
     )
     text = msg["content"][0]["text"]
     assert "Continue the task" in text
-    assert "Remembered facts:" in text
-    assert "- fact1" in text
 
 
 def test_build_planner_user_turn_long_url() -> None:
@@ -354,7 +377,7 @@ def test_build_planner_user_turn_long_url() -> None:
 
     long_url = "https://example.com/" + "a" * 200
     msg = _build_planner_user_turn(
-        step=0, task="task", memory=[], steps_log=[],
+        step=0, task="task", steps_log=[],
         current_url=long_url, snapshot_text="[0] link",
         img_b64="img", mode="rich",
     )
@@ -433,6 +456,48 @@ async def test_execute_action_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_action_key_shorthand_aliases() -> None:
+    """Common shorthand (ESC, DEL, CTRL, UP, ...) maps to Playwright names."""
+    from unittest.mock import AsyncMock, MagicMock
+    from openclose.tool.tools.browser_automation_shared import (
+        execute_action as _execute_action,
+    )
+
+    page = MagicMock()
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    await _execute_action(
+        page,
+        {"action": "key", "keys": ["ESC", "DEL", "CTRL", "UP", "PAGEDOWN", "SHIFT"]},
+    )
+    page.keyboard.press.assert_any_call("Escape")
+    page.keyboard.press.assert_any_call("Delete")
+    page.keyboard.press.assert_any_call("Control")
+    page.keyboard.press.assert_any_call("ArrowUp")
+    page.keyboard.press.assert_any_call("PageDown")
+    page.keyboard.press.assert_any_call("Shift")
+
+
+@pytest.mark.asyncio
+async def test_execute_action_key_passes_canonical_names_through() -> None:
+    """Canonical Playwright names (already correct) must not be remapped."""
+    from unittest.mock import AsyncMock, MagicMock
+    from openclose.tool.tools.browser_automation_shared import (
+        execute_action as _execute_action,
+    )
+
+    page = MagicMock()
+    page.keyboard = MagicMock()
+    page.keyboard.press = AsyncMock()
+    await _execute_action(
+        page, {"action": "key", "keys": ["Escape", "ArrowDown", "Enter"]},
+    )
+    page.keyboard.press.assert_any_call("Escape")
+    page.keyboard.press.assert_any_call("ArrowDown")
+    page.keyboard.press.assert_any_call("Enter")
+
+
+@pytest.mark.asyncio
 async def test_execute_action_mouse_move() -> None:
     from unittest.mock import AsyncMock, MagicMock
     from openclose.tool.tools.browser_automation_shared import execute_action as _execute_action
@@ -461,29 +526,60 @@ async def test_execute_action_scroll() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_action_visit_url() -> None:
+async def test_execute_action_visit_url_no_longer_dispatched() -> None:
+    """visit_url is now a tool intent handled by run_goto_intent, not a
+    planner action. execute_action should return the unknown_action
+    sentinel rather than silently navigating."""
     from unittest.mock import AsyncMock, MagicMock
     from openclose.tool.tools.browser_automation_shared import execute_action as _execute_action
 
     page = MagicMock()
     page.goto = AsyncMock()
     result = await _execute_action(page, {"action": "visit_url", "url": "https://test.com"})
-    assert "visit_url" in result
-    page.goto.assert_called_once()
+    assert "unknown_action" in result
+    page.goto.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_execute_action_web_search() -> None:
+async def test_execute_action_web_search_no_longer_dispatched() -> None:
+    """web_search is now a tool intent handled by run_web_search_intent,
+    not a planner action."""
     from unittest.mock import AsyncMock, MagicMock
     from openclose.tool.tools.browser_automation_shared import execute_action as _execute_action
 
     page = MagicMock()
     page.goto = AsyncMock()
     result = await _execute_action(page, {"action": "web_search", "query": "test query"})
-    assert "web_search" in result
-    call_args = page.goto.call_args[0][0]
-    assert "bing.com" in call_args
-    assert "test+query" in call_args
+    assert "unknown_action" in result
+    page.goto.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_web_search_intent_builds_bing_url() -> None:
+    """run_web_search_intent must URL-encode the query and route through
+    Bing — the same pipeline as run_goto_intent, but the URL is
+    constructed from `query`."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from openclose.tool.tools.browser_automation_shared import (
+        run_web_search_intent as _run_web_search_intent,
+        EventContext,
+    )
+
+    with patch(
+        "openclose.tool.tools.browser_automation_shared.run_goto_intent",
+        new_callable=AsyncMock,
+    ) as mock_goto:
+        mock_goto.return_value = (MagicMock(), MagicMock())
+        ctx = EventContext(sink=None, parent_tc_id="")
+        await _run_web_search_intent(
+            MagicMock(), MagicMock(), "test query",
+            ctx=ctx, project_dir=".",
+        )
+    assert mock_goto.await_count == 1
+    assert mock_goto.await_args is not None
+    forwarded_url = mock_goto.await_args.args[2]
+    assert "bing.com/search" in forwarded_url
+    assert "test+query" in forwarded_url
 
 
 @pytest.mark.asyncio
@@ -691,7 +787,7 @@ def test_build_planner_user_turn_dom_step_zero() -> None:
     from openclose.tool.tools.browser_automation import _build_planner_user_turn
 
     msg = _build_planner_user_turn(
-        step=0, task="Find the button", memory=[],
+        step=0, task="Find the button",
         steps_log=[], current_url="https://example.com",
         snapshot_text="[0] button \"Click me\"",
         img_b64=None, mode="dom",
@@ -708,15 +804,13 @@ def test_build_planner_user_turn_dom_later_step() -> None:
     from openclose.tool.tools.browser_automation import _build_planner_user_turn
 
     msg = _build_planner_user_turn(
-        step=2, task="Find the button", memory=["fact1"],
+        step=2, task="Find the button",
         steps_log=[], current_url="https://example.com",
         snapshot_text="[0] link \"Home\"",
         img_b64=None, mode="dom",
     )
     text = msg["content"]
     assert "Continue the task" in text
-    assert "Remembered facts:" in text
-    assert "- fact1" in text
     assert "[0] link" in text
 
 
@@ -817,7 +911,7 @@ def test_build_planner_user_turn_dom_without_diff() -> None:
     from openclose.tool.tools.browser_automation import _build_planner_user_turn
 
     msg = _build_planner_user_turn(
-        step=1, task="Click button", memory=[],
+        step=1, task="Click button",
         steps_log=[], current_url="https://example.com",
         snapshot_text="[0] button \"OK\"",
         img_b64=None, mode="dom",
@@ -853,8 +947,28 @@ def test_rich_mode_prompt_mentions_screenshot_and_target() -> None:
     # Rich mode allows both element_index and target
     assert "element_index" in lower
     assert "target" in lower
-    # Includes the grounding-failure recovery guidance
-    assert "tab cycling" in lower or "tab" in lower
+
+
+def test_rich_mode_prompt_prefers_target() -> None:
+    """Rich mode is opt-in via [browser_vision_grounding]; when active the
+    planner must be steered toward ``target`` (vision/grounding), not away
+    from it. Guards against re-inverting the language back to an
+    element_index-first preference.
+    """
+    from openclose.tool.tools.browser_automation import (
+        UNIFIED_PLANNER_SYSTEM_PROMPT_RICH,
+    )
+
+    lower = UNIFIED_PLANNER_SYSTEM_PROMPT_RICH.lower()
+    # Rich mode must steer the planner toward ``target``.
+    assert (
+        "default to ``target``" in lower
+        or "prefer ``target``" in lower
+    ), "rich-mode prompt should explicitly prefer/default to ``target``"
+    # And must NOT contain the old "prefer element_index" steering.
+    assert "prefer ``element_index``" not in lower, (
+        "rich-mode prompt should not push the planner back to element_index"
+    )
 
 
 # ── _summarise_recent_actions with element_index ────────────────────────────
@@ -879,6 +993,153 @@ def test_summarise_recent_actions_element_index() -> None:
     assert "element_index=3" in result
     # Should NOT fall through to target
     assert "target=" not in result
+
+
+def test_summarise_recent_actions_includes_intent_when_present() -> None:
+    from openclose.tool.tools.browser_automation_shared import summarise_recent_actions as _summarise_recent_actions
+
+    steps: list[dict[str, Any]] = [
+        {
+            "type": "tool_call", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": json.dumps({
+                "action": "left_click", "element_index": 3,
+                "intent": "Open the first result",
+            }),
+        },
+        {
+            "type": "tool_result", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": "left_click(100, 200)",
+        },
+    ]
+    result = _summarise_recent_actions(steps)
+    assert "[intent:" in result
+    assert "Open the first result" in result
+
+
+def test_summarise_recent_actions_omits_intent_when_absent() -> None:
+    from openclose.tool.tools.browser_automation_shared import summarise_recent_actions as _summarise_recent_actions
+
+    steps: list[dict[str, Any]] = [
+        {
+            "type": "tool_call", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": json.dumps({"action": "left_click", "element_index": 3}),
+        },
+        {
+            "type": "tool_result", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": "left_click(100, 200)",
+        },
+    ]
+    result = _summarise_recent_actions(steps)
+    assert "[intent:" not in result
+
+
+def test_summarise_recent_actions_truncates_long_intent() -> None:
+    from openclose.tool.tools.browser_automation_shared import summarise_recent_actions as _summarise_recent_actions
+
+    steps: list[dict[str, Any]] = [
+        {
+            "type": "tool_call", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": json.dumps({
+                "action": "left_click", "element_index": 3,
+                "intent": "x" * 80,
+            }),
+        },
+        {
+            "type": "tool_result", "subagent_label": "Planner",
+            "tool_call_id": "tc1",
+            "content": "left_click(100, 200)",
+        },
+    ]
+    result = _summarise_recent_actions(steps)
+    assert "…" in result
+
+
+# ── _detect_loop ────────────────────────────────────────────────────────────
+
+def test_detect_loop_three_identical_terminates() -> None:
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    sigs: list[tuple[str, Any]] = [("left_click", 3)] * 3
+    msg = _detect_loop(sigs, [])
+    assert msg is not None
+    assert "repeated 3 times" in msg
+
+
+def test_detect_loop_two_identical_does_not_terminate() -> None:
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    sigs: list[tuple[str, Any]] = [("left_click", 3)] * 2
+    assert _detect_loop(sigs, []) is None
+
+
+def test_detect_loop_ignores_intent_in_signature() -> None:
+    """Sigs come from (action, target) only — intent is excluded so free-form
+    prose variation doesn't defeat detection of the same repeated click."""
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    # Three identical (action, target) signatures still trigger termination,
+    # regardless of any intent the planner emitted alongside them.
+    sigs: list[tuple[str, Any]] = [("left_click", "Submit button")] * 3
+    msg = _detect_loop(sigs, [])
+    assert msg is not None
+
+
+def test_detect_loop_ab_cycle_with_no_change_terminates() -> None:
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    sigs: list[tuple[str, Any]] = [
+        ("left_click", 1),
+        ("left_click", 2),
+        ("left_click", 1),
+        ("left_click", 2),
+    ]
+    outcomes = [
+        "URL: unchanged\nDOM: no changes detected — silent fail",
+        "URL: unchanged\nDOM: no changes detected — silent fail",
+    ]
+    msg = _detect_loop(sigs, outcomes)
+    assert msg is not None
+    assert "oscillating" in msg
+
+
+def test_detect_loop_ab_cycle_with_page_change_does_not_terminate() -> None:
+    """Legitimate tab-switching workflows mutate the snapshot, so the
+    'no changes detected' gate prevents false positives."""
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    sigs: list[tuple[str, Any]] = [
+        ("left_click", 1),
+        ("left_click", 2),
+        ("left_click", 1),
+        ("left_click", 2),
+    ]
+    outcomes = [
+        "URL: unchanged\nDOM changes:\n+ Some content",
+        "URL: unchanged\nDOM changes:\n+ Other content",
+    ]
+    assert _detect_loop(sigs, outcomes) is None
+
+
+def test_detect_loop_ab_cycle_needs_distinct_actions() -> None:
+    """[X, X, X, X] is handled by the 3-identical branch; the A-B-A-B
+    branch must require X != Y to avoid double-counting."""
+    from openclose.tool.tools.browser_automation import _detect_loop
+
+    sigs: list[tuple[str, Any]] = [("left_click", 1)] * 4
+    outcomes = [
+        "URL: unchanged\nDOM: no changes detected",
+        "URL: unchanged\nDOM: no changes detected",
+    ]
+    msg = _detect_loop(sigs, outcomes)
+    # Three-identical fires first; the message names a single action.
+    assert msg is not None
+    assert "repeated 3 times" in msg
+
 
 
 # ── _snapshot_a11y ─────────────────────────────────────────────────────────
@@ -1261,7 +1522,7 @@ async def test_wait_after_action_nav_action_waits_for_load_and_networkidle() -> 
     page = MagicMock()
     page.wait_for_load_state = AsyncMock()
 
-    await wait_after_action(page, "visit_url")
+    await wait_after_action(page, "history_back")
 
     calls = page.wait_for_load_state.await_args_list
     assert len(calls) == 2
@@ -1274,7 +1535,9 @@ async def test_wait_after_action_maybe_nav_only_networkidle() -> None:
     from unittest.mock import AsyncMock, MagicMock
     from openclose.tool.tools.browser_automation_shared import wait_after_action
 
-    for action in ("left_click", "key"):
+    # `type` is in MAYBE_NAV because typing often fires autocomplete /
+    # search XHR and frequently submits a form via inner Enter.
+    for action in ("left_click", "key", "type"):
         page = MagicMock()
         page.wait_for_load_state = AsyncMock()
 
@@ -1291,7 +1554,7 @@ async def test_wait_after_action_local_action_sleeps_briefly() -> None:
     from unittest.mock import AsyncMock, MagicMock, patch
     from openclose.tool.tools.browser_automation_shared import wait_after_action
 
-    for action in ("type", "scroll", "mouse_move", "wait", "pause_and_memorize_fact"):
+    for action in ("scroll", "mouse_move", "wait"):
         page = MagicMock()
         page.wait_for_load_state = AsyncMock()
 
@@ -1316,8 +1579,54 @@ async def test_wait_after_action_swallows_timeout_exceptions() -> None:
     page.wait_for_load_state = AsyncMock(side_effect=Exception("timeout"))
 
     # Should not raise.
-    await wait_after_action(page, "visit_url")
+    await wait_after_action(page, "history_back")
     await wait_after_action(page, "left_click")
+
+
+# ── settle_after_navigate ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_settle_after_navigate_waits_load_then_networkidle() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from openclose.tool.tools.browser_automation_shared import (
+        settle_after_navigate,
+    )
+
+    page = MagicMock()
+    page.wait_for_load_state = AsyncMock()
+
+    with patch(
+        "openclose.tool.tools.browser_automation_shared.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as mock_sleep:
+        await settle_after_navigate(page)
+
+    calls = page.wait_for_load_state.await_args_list
+    assert len(calls) == 2
+    assert calls[0].args[0] == "load" and calls[0].kwargs["timeout"] == 10000
+    assert calls[1].args[0] == "networkidle" and calls[1].kwargs["timeout"] == 3000
+    # POST_ACTION_WAIT_S sleep at the end (0.5s).
+    assert mock_sleep.await_args is not None
+    assert mock_sleep.await_args.args == (0.5,)
+
+
+@pytest.mark.asyncio
+async def test_settle_after_navigate_swallows_timeouts() -> None:
+    """Long-poll sites never reach networkidle — must not stall."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from openclose.tool.tools.browser_automation_shared import (
+        settle_after_navigate,
+    )
+
+    page = MagicMock()
+    page.wait_for_load_state = AsyncMock(side_effect=Exception("timeout"))
+
+    with patch(
+        "openclose.tool.tools.browser_automation_shared.asyncio.sleep",
+        new_callable=AsyncMock,
+    ):
+        # Should not raise even though both load-state waits explode.
+        await settle_after_navigate(page)
 
 
 # ── _build_planner_user_turn (dom): action_outcome block ───────────────────
@@ -1328,7 +1637,7 @@ def test_build_planner_user_turn_dom_injects_outcome_when_present() -> None:
     )
 
     msg = _build_planner_user_turn(
-        step=1, task="find stuff", memory=[], steps_log=[],
+        step=1, task="find stuff", steps_log=[],
         current_url="http://a", snapshot_text="[0] button 'X'",
         img_b64=None, mode="dom",
         initial_url="",
@@ -1350,7 +1659,7 @@ def test_build_planner_user_turn_dom_skips_outcome_when_empty() -> None:
     )
 
     msg = _build_planner_user_turn(
-        step=0, task="find stuff", memory=[], steps_log=[],
+        step=0, task="find stuff", steps_log=[],
         current_url="http://a", snapshot_text="[0] button 'X'",
         img_b64=None, mode="dom",
         initial_url="",
@@ -1374,58 +1683,112 @@ def test_validate_intent_unknown() -> None:
     err = validate_intent("teleport", "", "https://x")
     assert err is not None
     assert err.startswith("Unknown intent 'teleport'")
-    # lists valid values
-    assert "goto_page" in err
-    assert "navigate" in err
+    # lists current valid values
+    assert "visit_url" in err
+    assert "act_on_page" in err
+    assert "web_search" in err
+    # the renamed-away intents must not be advertised
+    assert "goto_page" not in err
+    assert "'navigate'" not in err  # the bare intent name
     # the dropped intent must not be advertised
     assert "goto_page_and_read_body" not in err
 
 
-def test_validate_intent_goto_page_requires_url() -> None:
+def test_validate_intent_visit_url_requires_url() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    err = validate_intent("goto_page", "", "")
+    err = validate_intent("visit_url", "", "")
     assert err is not None
     assert "requires a url" in err
 
 
-def test_validate_intent_goto_page_rejects_task() -> None:
+def test_validate_intent_visit_url_rejects_task() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    err = validate_intent("goto_page", "do stuff", "https://x")
+    err = validate_intent("visit_url", "do stuff", "https://x")
     assert err is not None
     assert "doesn't accept a task" in err
-    assert "navigate" in err  # points to correct intent
+    assert "act_on_page" in err  # points to correct intent
 
 
-def test_validate_intent_goto_page_valid() -> None:
+def test_validate_intent_visit_url_rejects_query() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    assert validate_intent("goto_page", "", "https://x") is None
+    err = validate_intent("visit_url", "", "https://x", "cats")
+    assert err is not None
+    assert "doesn't accept a query" in err
+    assert "web_search" in err  # points to correct intent
+
+
+def test_validate_intent_visit_url_valid() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    assert validate_intent("visit_url", "", "https://x") is None
 
 
 def test_validate_intent_dropped_legacy_intent_unknown() -> None:
     """The merged tool no longer accepts the old `goto_page_and_read_body`
     intent — it must now produce an Unknown-intent error like any other
-    bogus value."""
+    bogus value. Same applies to the renamed-away `goto_page` / `navigate`."""
     from openclose.tool.tools.browser_automation_shared import validate_intent
     err = validate_intent("goto_page_and_read_body", "", "https://x")
     assert err is not None
     assert err.startswith("Unknown intent 'goto_page_and_read_body'")
+    err = validate_intent("goto_page", "", "https://x")
+    assert err is not None
+    assert err.startswith("Unknown intent 'goto_page'")
+    err = validate_intent("navigate", "do stuff", "")
+    assert err is not None
+    assert err.startswith("Unknown intent 'navigate'")
 
 
-def test_validate_intent_navigate_requires_task() -> None:
+def test_validate_intent_act_on_page_requires_task() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    err = validate_intent("navigate", "", "https://x")
+    err = validate_intent("act_on_page", "", "https://x")
     assert err is not None
     assert "requires a task" in err
 
 
-def test_validate_intent_navigate_valid_with_task_only() -> None:
+def test_validate_intent_act_on_page_valid_with_task_only() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    assert validate_intent("navigate", "reach goal", "") is None
+    assert validate_intent("act_on_page", "reach goal", "") is None
 
 
-def test_validate_intent_navigate_valid_with_task_and_url() -> None:
+def test_validate_intent_act_on_page_valid_with_task_and_url() -> None:
     from openclose.tool.tools.browser_automation_shared import validate_intent
-    assert validate_intent("navigate", "reach goal", "https://x") is None
+    assert validate_intent("act_on_page", "reach goal", "https://x") is None
+
+
+def test_validate_intent_act_on_page_rejects_query() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    err = validate_intent("act_on_page", "reach goal", "", "cats")
+    assert err is not None
+    assert "doesn't accept a query" in err
+    assert "web_search" in err
+
+
+def test_validate_intent_web_search_requires_query() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    err = validate_intent("web_search", "", "", "")
+    assert err is not None
+    assert "requires a query" in err
+
+
+def test_validate_intent_web_search_rejects_task() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    err = validate_intent("web_search", "do stuff", "", "cats")
+    assert err is not None
+    assert "doesn't accept a task" in err
+    assert "act_on_page" in err
+
+
+def test_validate_intent_web_search_rejects_url() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    err = validate_intent("web_search", "", "https://x", "cats")
+    assert err is not None
+    assert "doesn't accept a url" in err
+    assert "visit_url" in err
+
+
+def test_validate_intent_web_search_valid() -> None:
+    from openclose.tool.tools.browser_automation_shared import validate_intent
+    assert validate_intent("web_search", "", "", "cats") is None
 
 
 # ── format_tool_output short_mode ────────────────────────────────────────────
@@ -2220,3 +2583,102 @@ def test_write_navigation_dump_swallows_filesystem_errors(
     monkeypatch.setattr(_Path, "mkdir", _raise)
     result = write_navigation_dump(".", _make_fake_page_content())
     assert result is None
+
+
+# ── passive viewer helpers (screenshot endpoint) ─────────────────────────────
+
+class _StubFrame:
+    def __init__(self, detached: bool = False) -> None:
+        self._detached = detached
+
+    def is_detached(self) -> bool:
+        return self._detached
+
+
+class _StubPage:
+    def __init__(self, *, closed: bool = False, detached: bool = False) -> None:
+        self._closed = closed
+        self.main_frame = _StubFrame(detached=detached)
+
+    def is_closed(self) -> bool:
+        return self._closed
+
+
+class _StubContext:
+    def __init__(self, pages: list[Any]) -> None:
+        self.pages = pages
+        self.new_page_calls = 0
+
+    async def new_page(self) -> Any:
+        self.new_page_calls += 1
+        raise AssertionError(
+            "passive viewer must never call new_page()"
+        )
+
+
+def test_pick_existing_page_for_view_returns_none_on_empty() -> None:
+    from openclose.tool.tools.browser_automation_shared import (
+        _pick_existing_page_for_view,
+    )
+
+    ctx = _StubContext(pages=[])
+    assert _pick_existing_page_for_view(ctx) is None
+    assert ctx.new_page_calls == 0
+
+
+def test_pick_existing_page_for_view_prefers_most_recent_valid() -> None:
+    from openclose.tool.tools.browser_automation_shared import (
+        _pick_existing_page_for_view,
+    )
+
+    oldest = _StubPage()
+    middle = _StubPage()
+    newest_closed = _StubPage(closed=True)
+    ctx = _StubContext(pages=[oldest, middle, newest_closed])
+
+    picked = _pick_existing_page_for_view(ctx)
+    assert picked is middle
+    assert ctx.new_page_calls == 0
+
+
+def test_pick_existing_page_for_view_returns_newest_when_valid() -> None:
+    from openclose.tool.tools.browser_automation_shared import (
+        _pick_existing_page_for_view,
+    )
+
+    oldest = _StubPage()
+    newest = _StubPage()
+    ctx = _StubContext(pages=[oldest, newest])
+
+    assert _pick_existing_page_for_view(ctx) is newest
+
+
+def test_pick_existing_page_for_view_returns_none_when_all_invalid() -> None:
+    from openclose.tool.tools.browser_automation_shared import (
+        _pick_existing_page_for_view,
+    )
+
+    ctx = _StubContext(pages=[
+        _StubPage(closed=True),
+        _StubPage(detached=True),
+    ])
+    assert _pick_existing_page_for_view(ctx) is None
+
+
+async def test_acquire_singleton_browser_readonly_returns_cached_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openclose.tool.tools import browser_automation_shared as shared
+
+    sentinel_pw = object()
+    sentinel_browser = object()
+    sentinel_context = object()
+    monkeypatch.setattr(shared, "_singleton_pw", sentinel_pw)
+    monkeypatch.setattr(shared, "_singleton_browser", sentinel_browser)
+    monkeypatch.setattr(shared, "_singleton_context", sentinel_context)
+    monkeypatch.setattr(shared, "_connection_is_alive", lambda _b: True)
+
+    # No playwright import should fire — sentinel object would explode
+    # if Playwright tried to touch it.
+    result = await shared.acquire_singleton_browser_readonly()
+    assert result == (sentinel_pw, sentinel_browser, sentinel_context)
