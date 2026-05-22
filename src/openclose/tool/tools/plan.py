@@ -456,40 +456,15 @@ def make_plan_tool(project_dir: str, registry: ToolRegistry) -> Tool:
 
     return Tool(
         name="plan",
-        description=(
-            "USE IT FIRST TO DRAFT A PLAN THEN TO DELIVER THE FINALIZED PLAN to the user. "
-            "For `phase=\"draft\"`, spawns a read-only "
-            "reviewer sub-agent that re-reads relevant code, criticizes "
-            "the plan against actual files, and returns concrete "
-            "feedback wrapped in `<report>...</report>` (Verdict / "
-            "Issues / Concrete edits / Verified / Caveats) so the agent "
-            "can iterate. For `phase=\"final\"`, pauses the agent loop "
-            "and presents the plan to the user (Execute / Accept & "
-            "Clear / Reject / Send Feedback). "
-            "Skip to phase=\"final\"` directly ONLY for trivial plans."
-        ),
+        description='plan(content="# Plan\\n\\n1. Edit src/foo.py:42 ...", phase="draft")',
         parameters=[
             ToolParameter(
                 name="content",
-                description=(
-                    "Full implementation plan in Markdown. Include "
-                    "affected files, the specific change per file, "
-                    "step-by-step ordering, and any verification (tests, "
-                    "type checks). Use `path/to/file.py:line` citations "
-                    "and code blocks where they sharpen the plan. The "
-                    "reviewer reads this content directly — make the "
-                    "user's goal inferable from it."
-                ),
+                description='"# Plan\\n\\n1. Edit src/foo.py:42 ..."',
             ),
             ToolParameter(
                 name="phase",
-                description=(
-                    "`draft` to get a critical review by a read-only "
-                    "sub-agent (returns concrete feedback for "
-                    "iteration), or `final` to deliver the polished "
-                    "plan to the user for accept/reject/revise. Always "
-                    "draft first unless the plan is trivial."
-                ),
+                description='"draft"',
                 enum=["draft", "final"],
             ),
         ],

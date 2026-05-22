@@ -87,48 +87,26 @@ def make_multiedit_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="multiedit",
-        description=(
-            "USE IT TO APPLY SEVERAL CHANGES via literal find/replace edits to the same "
-            "file in one batched call. "
-        ),
+        description='multiedit(file_path="src/main.py", edits=[{"old_string": "def foo():", "new_string": "def bar():"}])',
         parameters=[
             ToolParameter(
                 name="file_path",
-                description=(
-                    "Path to the file to edit. Absolute or relative to the project "
-                    "working directory. Must point to an existing file inside the "
-                    "project; edits outside the project are rejected."
-                ),
+                description='"src/main.py"',
             ),
             ToolParameter(
                 name="edits",
                 type="array",
-                description=(
-                    "Ordered array of edit objects. Edits apply sequentially — "
-                    "later edits see the result of earlier ones."
-                ),
+                description='[{"old_string": "def foo():", "new_string": "def bar():"}]',
                 items={
                     "type": "object",
                     "properties": {
                         "old_string": {
                             "type": "string",
-                            "description": (
-                                "Exact substring to find — matched literally, not "
-                                "as a regex. Must appear exactly once in the "
-                                "file's current state at the time this edit is "
-                                "applied (no `replace_all` equivalent here); "
-                                "include surrounding context to make the match "
-                                "unique."
-                            ),
+                            "description": '"def foo():"',
                         },
                         "new_string": {
                             "type": "string",
-                            "description": (
-                                "Text that replaces the match of `old_string`. "
-                                "Use `\"\"` to delete it. Whitespace/indentation "
-                                "is taken literally — preserve the surrounding "
-                                "style."
-                            ),
+                            "description": '"def bar():"',
                         },
                     },
                     "required": ["old_string", "new_string"],

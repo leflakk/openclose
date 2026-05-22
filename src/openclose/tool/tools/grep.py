@@ -43,36 +43,20 @@ def make_grep_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="grep",
-        description=(
-            "USE IT TO FIND LINES INSIDE FILES matching a regex (e.g., where "
-            "a symbol is defined or referenced). "
-            "Returns matching lines as `file:line:content`, capped "
-            "at 200 hits, with ignored files (per `.gitignore` and equivalents) "
-            "excluded."
-        ),
+        description='grep(pattern="def foo", path="src/", include="*.py")',
         parameters=[
             ToolParameter(
                 name="pattern",
-                description=(
-                    "Regex pattern matched against each line's contents (PCRE-like "
-                    "via ripgrep). Use anchors and groups as needed, e.g., "
-                    "`^def my_func\\b` or `import\\s+(foo|bar)`."
-                ),
+                description='"def foo"',
             ),
             ToolParameter(
                 name="path",
-                description=(
-                    "File or directory to search in. Absolute or relative to the "
-                    "project working directory. Use to scope a search to a subtree."
-                ),
+                description='"src/"',
                 required=False,
             ),
             ToolParameter(
                 name="include",
-                description=(
-                    "Glob filter restricting which files are searched, e.g., "
-                    "`*.py`, `src/**/*.ts`."
-                ),
+                description='"*.py"',
                 required=False,
             ),
         ],

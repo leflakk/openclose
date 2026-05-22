@@ -62,46 +62,23 @@ def make_ask_user_tool() -> Tool:
 
     return Tool(
         name="ask_user",
-        description=(
-            "USE IT TO RESOLVE KEY DECISIONS or ambiguities you cannot "
-            "answer from the codebase alone (preferences, scope choices, "
-            "naming, picking between equally valid approaches)."
-        ),
+        description='ask_user(questions=[{"question": "Keep legacy endpoint?", "choices": ["Keep it", "Remove it"]}])',
         parameters=[
             ToolParameter(
                 name="questions",
                 type="array",
-                description=(
-                    "Ordered list of up to 10 question objects to ask in one "
-                    "batch. Prefer a single call with several questions over "
-                    "asking one at a time. Must be a JSON array of objects — "
-                    "do NOT stringify it. Example: "
-                    "[{\"question\": \"Keep the legacy endpoint?\", "
-                    "\"choices\": [\"Keep it\", \"Remove it\"]}, "
-                    "{\"question\": \"Name for the new flag?\", "
-                    "\"choices\": [\"enable_v2\", \"use_new_pipeline\"]}]"
-                ),
+                description='[{"question": "Keep legacy endpoint?", "choices": ["Keep it", "Remove it"]}]',
                 items={
                     "type": "object",
                     "properties": {
                         "question": {
                             "type": "string",
-                            "description": (
-                                "The question text shown to the user. Be "
-                                "specific and self-contained — give enough "
-                                "context that the user can answer without "
-                                "re-reading the conversation."
-                            ),
+                            "description": '"Keep legacy endpoint?"',
                         },
                         "choices": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": (
-                                "At least 2 short option strings shown as "
-                                "clickable buttons. Make them mutually "
-                                "exclusive and self-explanatory; the user "
-                                "picks exactly one."
-                            ),
+                            "description": '["Keep it", "Remove it"]',
                         },
                     },
                     "required": ["question", "choices"],

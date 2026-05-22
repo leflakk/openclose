@@ -38,29 +38,15 @@ def make_write_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="write",
-        description=(
-            "USE IT TO CREATE A NEW FILE or fully overwrite an existing one. "
-            "Writes `content` to `file_path`, creating any missing "
-            "parent directories. If the file already exists, it is replaced "
-            "wholesale."
-        ),
+        description='write(file_path="src/main.py", content="print(\'hello\')\\n")',
         parameters=[
             ToolParameter(
                 name="file_path",
-                description=(
-                    "Path to the file to write. Absolute or relative to the "
-                    "project working directory. Must resolve inside the project; "
-                    "writes outside are rejected. Missing parent directories are "
-                    "created automatically."
-                ),
+                description='"src/main.py"',
             ),
             ToolParameter(
                 name="content",
-                description=(
-                    "Full text of the file. Written exactly as given (no trailing "
-                    "newline added). Pass an empty string to clear an existing "
-                    "file."
-                ),
+                description='"print(\'hello\')\\n"',
             ),
         ],
         execute_fn=execute,

@@ -55,19 +55,11 @@ def make_webfetch_tool() -> Tool:
 
     return Tool(
         name="webfetch",
-        description=(
-            "USE IT TO RETRIEVE FROM A KNOWN URL - webpage content, documentation, API references, an "
-            "upstream PR/commit/issue page linked from a bug report."
-        ),
+        description='webfetch(url="https://example.com/docs")',
         parameters=[
             ToolParameter(
                 name="url",
-                description=(
-                    "Absolute URL to fetch (must include scheme, e.g. "
-                    "`https://...`). Only GET is supported. Use a URL "
-                    "provided by the user or one found inside content "
-                    "already fetched — do not invent or guess URLs."
-                ),
+                description='"https://example.com/docs"',
             ),
         ],
         execute_fn=execute,

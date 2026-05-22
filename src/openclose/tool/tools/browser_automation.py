@@ -1374,86 +1374,32 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="browser_automation",
-        description=(
-            "USE IT TO OPEN A URL, RUN A WEB SEARCH, OR DRIVE CHROME VIA CDP. "
-            "`visit_url` opens a URL and returns navigation data; "
-            "`web_search` runs a Bing search for `query` and returns the "
-            "results page in the same shape. In both cases the visible "
-            "page text is always saved to a markdown file — to read it, "
-            "use `grep` and `read` on the path printed after "
-            "`Page content saved at:`. "
-            "`act_on_page` hands a `task` to a planner sub-agent that "
-            "interacts with the already-loaded page (clicks, forms, "
-            "dropdowns) via the accessibility tree. "
-            "VERY IMPORTANT: YOU MUST ALWAYS SPLIT TASKS INTO VERY SMALL OBJECTIVES "
-            "WHEN CALLING THIS TOOL AND IT CANNOT BE CALLED CONCURRENTLY."
-        ),
+        description='browser_automation(intent="visit_url", url="https://example.com", task="", query="", max_steps=5)',
         parameters=[
             ToolParameter(
                 name="intent",
-                description=(
-                    "What this call should do. "
-                    "`visit_url`: load `url`, dump the page, and return "
-                    "the URL, title, interactive elements, links, and "
-                    "iframes; the full page text is saved to a markdown "
-                    "file (path printed in the output) — recover specific "
-                    "text from it with `grep` and `read`. "
-                    "`web_search`: run a Bing search for `query` and "
-                    "return the same shape as `visit_url` for the "
-                    "results page. "
-                    "`act_on_page`: hand `task` to a planner sub-agent "
-                    "that interacts with the page (clicks, forms, "
-                    "dropdowns) until the goal is reached; on success "
-                    "returns a short confirmation, on failure returns "
-                    "the same content as `visit_url` plus a "
-                    "`failure_reason:` line for diagnosis."
-                ),
+                description='"visit_url"',
                 enum=["visit_url", "act_on_page", "web_search"],
             ),
             ToolParameter(
                 name="task",
-                description=(
-                    "Goal description for `intent='act_on_page'` — "
-                    "required there, rejected for `visit_url` and "
-                    "`web_search`. State the objective in plain language "
-                    "(\"add an item to the cart\", \"find the pricing "
-                    "page\"), not the UI steps; the planner decides what "
-                    "to click."
-                ),
+                description='"add an item to the cart"',
                 required=False,
             ),
             ToolParameter(
                 name="url",
-                description=(
-                    "Target URL (must include scheme, e.g. https://). "
-                    "Required for `visit_url`. Optional for "
-                    "`act_on_page` as a starting point — when omitted, "
-                    "navigation begins from the current page. If the "
-                    "browser is already on this URL, the navigation step "
-                    "is skipped. Rejected for `web_search`."
-                ),
+                description='"https://example.com"',
                 required=False,
             ),
             ToolParameter(
                 name="query",
-                description=(
-                    "Search query for `intent='web_search'` — required "
-                    "there, rejected for `visit_url` and `act_on_page`. "
-                    "The query is sent to Bing as a normal search "
-                    "string; no operators are required."
-                ),
+                description='"python asyncio tutorial"',
                 required=False,
             ),
             ToolParameter(
                 name="max_steps",
                 type="integer",
-                description=(
-                    "Maximum number of planner turns for "
-                    "`intent='act_on_page'`. Increase for multi-step "
-                    "flows (forms, multi-page wizards); leave at default "
-                    "for short navigations. Ignored for `visit_url` and "
-                    "`web_search`. Default 5, hard cap 15."
-                ),
+                description="5",
                 required=False,
             ),
         ],

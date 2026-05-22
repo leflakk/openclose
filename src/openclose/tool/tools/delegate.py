@@ -575,58 +575,28 @@ def make_delegate_tool(project_dir: str, registry: ToolRegistry) -> Tool:
 
     return Tool(
         name="delegate",
-        description=(
-            "USE IT FOR FOCUSED INVESTIGATIONS that would otherwise "
-            "consume parent context — mapping a subsystem, tracing a call "
-            "chain, surveying call sites, answering structured questions "
-            "about the codebase. "
-            "The tool spawns a sub-agent per `mission_N` parameter (1-3 missions), "
-            "runs them in parallel, returns one combined report. "
-            "For investigations that decompose into more than "
-            "3 angles, pick the 3 highest-value ones for this call and "
-            "queue the rest for a follow-up delegate call after you read "
-            "the first batch."
-        ),
+        description='delegate(mission_1="Map the auth subsystem in src/auth/", mission_2="Trace request flow from api/handlers.py", budget="extended")',
         parameters=[
             ToolParameter(
                 name="mission_1",
                 type="string",
-                description=(
-                    "First investigation mission. State the goal in plain "
-                    "language, include scoping/constraints inline (target "
-                    "files, directories, what to exclude, shape of answer "
-                    "wanted). Vague missions produce vague reports."
-                ),
+                description='"Map the auth subsystem in src/auth/"',
             ),
             ToolParameter(
                 name="mission_2",
                 type="string",
                 required=False,
-                description=(
-                    "Second independent mission (runs concurrently with "
-                    "the first). Omit if one mission suffices."
-                ),
+                description='"Trace request flow from api/handlers.py"',
             ),
             ToolParameter(
                 name="mission_3",
                 type="string",
                 required=False,
-                description=(
-                    "Third independent mission. Pick the 3 highest-value "
-                    "angles; queue the rest for a follow-up call."
-                ),
+                description='"List call sites of foo() under src/"',
             ),
             ToolParameter(
                 name="budget",
-                description=(
-                    "Per-mission tool-call budget and expected report "
-                    "depth. Applies identically to every provided "
-                    "`mission_N`. `default` (30 tool calls): focused "
-                    "answer to the mission; findings optional. `extended` "
-                    "(50 tool calls): focused answer + concrete findings "
-                    "(bugs, risks, load-bearing details) the "
-                    "investigation surfaces."
-                ),
+                description='"default"',
                 enum=["default", "extended"],
                 required=False,
                 default=_DEFAULT_BUDGET,

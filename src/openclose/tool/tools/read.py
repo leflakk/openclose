@@ -53,39 +53,23 @@ def make_read_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="read",
-        description=(
-            "USE IT TO READ THE CONTENT OF A FILE when its path is already "
-            "known. Read enough lines in a single call to avoid "
-            "wasteful iteration; binary files are rejected."
-        ),
+        description='read(file_path="src/main.py", offset=0, limit=2000)',
         parameters=[
             ToolParameter(
                 name="file_path",
-                description=(
-                    "Path to the file to read. Can be absolute or relative to the "
-                    "project working directory. The file must exist and be a text "
-                    "(non-binary) file."
-                ),
+                description='"src/main.py"',
             ),
             ToolParameter(
                 name="offset",
                 type="integer",
-                description=(
-                    "0-based line index to start reading from. Use together with "
-                    "`limit` to page through files too large to read in one call; "
-                    "otherwise leave at default."
-                ),
+                description="0",
                 required=False,
                 default=0,
             ),
             ToolParameter(
                 name="limit",
                 type="integer",
-                description=(
-                    "Maximum number of lines to return starting from `offset`. "
-                    "Increase upfront when you expect a larger file and want it in "
-                    "one call; only lower it when explicitly paging."
-                ),
+                description="2000",
                 required=False,
                 default=2000,
             ),

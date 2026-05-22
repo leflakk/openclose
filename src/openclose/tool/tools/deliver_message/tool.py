@@ -42,48 +42,28 @@ def make_deliver_message_tool() -> Tool:
     aliases_blurb = _format_aliases_for_prompt(cfg)
     return Tool(
         name="deliver_message",
-        description=(
-            "Send a text message to one or more pre-configured channels "
-            "(Telegram or Discord bots). "
-            f"{aliases_blurb} "
-            "Long messages are automatically split to respect each "
-            "platform's length limits (Telegram 4096, Discord 2000); "
-            "fenced code blocks are preserved across chunks."
-        ),
+        description=f'deliver_message(channels=["me"], message="hello", format="plain", title=""). {aliases_blurb}',
         parameters=[
             ToolParameter(
                 name="channels",
                 type="array",
-                description=(
-                    "One or more channel aliases (max 10). "
-                    f"{aliases_blurb}"
-                ),
+                description=f'["me"]. {aliases_blurb}',
                 items={"type": "string"},
             ),
             ToolParameter(
                 name="message",
-                description=(
-                    "Message body (max 100000 characters).  Fenced "
-                    "code blocks (```...```) are preserved."
-                ),
+                description='"hello"',
             ),
             ToolParameter(
                 name="format",
-                description=(
-                    "'plain' (default) sends as-is; 'markdown' uses "
-                    "Telegram legacy Markdown and Discord native "
-                    "markdown."
-                ),
+                description='"plain"',
                 required=False,
                 default="plain",
                 enum=["plain", "markdown"],
             ),
             ToolParameter(
                 name="title",
-                description=(
-                    "Optional title prefixed to the message "
-                    "(bold in markdown mode, plain otherwise)."
-                ),
+                description='"Build status"',
                 required=False,
                 default="",
             ),

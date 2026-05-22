@@ -42,29 +42,15 @@ def make_glob_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="glob",
-        description=(
-            "USE IT TO LIST FILES whose paths match a known shell-style glob "
-            "pattern (e.g., all `.py` files, every config under a folder). "
-            "Returns file paths matching the pattern, sorted "
-            "alphabetically, with ignored files (per `.gitignore` and equivalents) "
-            "excluded."
-        ),
+        description='glob(pattern="**/*.py", path="src/")',
         parameters=[
             ToolParameter(
                 name="pattern",
-                description=(
-                    "Shell-style glob pattern matched against file paths, e.g., "
-                    "`**/*.py` for every Python file at any depth, "
-                    "`src/**/test_*.ts` for test files under `src/`."
-                ),
+                description='"**/*.py"',
             ),
             ToolParameter(
                 name="path",
-                description=(
-                    "Base directory to search from. Absolute or relative to the "
-                    "project working directory. Use to scope a search to a subtree "
-                    "(e.g., `src/`)."
-                ),
+                description='"src/"',
                 required=False,
             ),
         ],
