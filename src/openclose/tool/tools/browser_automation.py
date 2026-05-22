@@ -1374,7 +1374,11 @@ def make_browser_automation_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="browser_automation",
-        description='browser_automation(intent="visit_url", url="https://example.com", task="", query="", max_steps=5)',
+        description=(
+            'browser_automation(intent="visit_url", url="https://example.com") | '
+            'browser_automation(intent="web_search", query="python asyncio tutorial") | '
+            'browser_automation(intent="act_on_page", task="add an item to the cart", url="https://shop.example.com", max_steps=8)'
+        ),
         parameters=[
             ToolParameter(
                 name="intent",

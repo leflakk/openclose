@@ -456,7 +456,10 @@ def make_plan_tool(project_dir: str, registry: ToolRegistry) -> Tool:
 
     return Tool(
         name="plan",
-        description='plan(content="# Plan\\n\\n1. Edit src/foo.py:42 ...", phase="draft")',
+        description=(
+            'plan(content="# Plan\\n\\n1. Edit src/foo.py:42 ...", phase="draft") | '
+            'plan(content="# Plan\\n\\n1. Edit src/foo.py:42 ...", phase="final")'
+        ),
         parameters=[
             ToolParameter(
                 name="content",

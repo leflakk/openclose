@@ -62,7 +62,7 @@ def make_ask_user_tool() -> Tool:
 
     return Tool(
         name="ask_user",
-        description='ask_user(questions=[{"question": "Keep legacy endpoint?", "choices": ["Keep it", "Remove it"]}])',
+        description='ask_user(questions=[{"question": "Keep legacy endpoint?", "choices": ["Keep it", "Remove it"]}, {"question": "Name for the new flag?", "choices": ["enable_v2", "use_new_pipeline"]}])',
         parameters=[
             ToolParameter(
                 name="questions",
