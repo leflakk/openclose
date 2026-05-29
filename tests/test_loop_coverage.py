@@ -770,7 +770,8 @@ async def test_run_permission_ask_no_broker() -> None:
 
 @pytest.mark.asyncio
 async def test_run_empty_response_retries_then_terminates() -> None:
-    """Empty responses should retry with nudge, then terminate after max retries."""
+    """With no tools, empty responses retry with the nudge fallback, then
+    terminate after max retries."""
     from openclose.agent.loop import _MAX_EMPTY_RETRIES
 
     provider = _make_provider()
@@ -798,12 +799,14 @@ async def test_run_empty_response_retries_then_terminates() -> None:
 
 @pytest.mark.asyncio
 async def test_run_empty_response_recovers() -> None:
-    """Model recovers after one empty response thanks to nudge."""
+    """With no tools, an empty response recovers via the text-nudge fallback."""
     provider = _make_provider()
     call_count = 0
+    captured_kwargs: list[dict[str, Any]] = []
 
     async def mock_chat(**kwargs: Any) -> Any:
         nonlocal call_count
+        captured_kwargs.append(kwargs)
         call_count += 1
         if call_count == 1:
             yield _build_chunk(content=None, tool_calls=None, finish_reason="stop")
@@ -811,7 +814,7 @@ async def test_run_empty_response_recovers() -> None:
             yield _build_chunk(content="Here is my response", finish_reason="stop")
 
     provider.chat = mock_chat
-    agent = _make_agent()
+    agent = _make_agent()  # no tools → cannot force, must nudge
     loop = AgentLoop(agent=agent, provider=provider)
 
     events = []
@@ -822,6 +825,170 @@ async def test_run_empty_response_recovers() -> None:
     assert any(e.type == "text" and "Here is my response" in e.content for e in events)
     assert any(e.type == "done" for e in events)
     assert call_count == 2
+    # No tools available, so the retry must NOT force tool_choice.
+    assert all(k.get("tool_choice") is None for k in captured_kwargs)
+
+
+@pytest.mark.asyncio
+async def test_run_empty_response_forces_tool_choice_when_tools_present() -> None:
+    """An empty response with tools available forces tool_choice='required' on
+    the retry (the proven recovery), without polluting history with a nudge."""
+    from openclose.agent.agent import AgentMode
+
+    provider = _make_provider()
+    captured_kwargs: list[dict[str, Any]] = []
+    call_count = {"n": 0}
+
+    async def mock_chat(**kwargs: Any) -> Any:
+        captured_kwargs.append(kwargs)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Empty (EOS-only) completion — the wedge trigger.
+            yield _build_chunk(content=None, tool_calls=None, finish_reason="stop")
+        elif call_count["n"] == 2:
+            # Forced retry: model now emits a tool call.
+            yield _build_chunk(tool_calls=[{
+                "index": 0, "id": "tc1", "name": "read",
+                "arguments": json.dumps({"file_path": "/tmp/x.py"}),
+            }])
+        else:
+            # After the tool result, finish with text.
+            yield _build_chunk(content="done")
+
+    provider.chat = mock_chat
+    agent = Agent(
+        name="build", description="main", model="test", max_steps=5,
+        system_prompt="x", mode=AgentMode.PRIMARY, allowed_tools=["read"],
+    )
+
+    async def mock_executor(name: str, args: dict[str, Any]) -> ToolResult:
+        return ToolResult(output="contents")
+
+    loop = AgentLoop(
+        agent=agent, provider=provider,
+        tool_executor=mock_executor,
+        tool_schemas=[{"name": "read", "parameters": {"properties": {}}}],
+        project_dir="/tmp",
+    )
+
+    events = []
+    async for event in loop.run("hi"):
+        events.append(event)
+
+    # Step 1 was unforced; the retry after the empty response forces it;
+    # the post-tool step reverts to auto.
+    assert call_count["n"] == 3
+    assert captured_kwargs[0].get("tool_choice") is None
+    assert captured_kwargs[1].get("tool_choice") == "required"
+    assert captured_kwargs[2].get("tool_choice") is None
+    # The forced-tool path must NOT inject a text nudge into the history.
+    from openclose.agent.loop import _EMPTY_RESPONSE_NUDGE
+    assert all(
+        m.get("content") != _EMPTY_RESPONSE_NUDGE for m in loop._messages
+    )
+    assert any(e.type == "done" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_run_empty_response_forces_on_every_retry_then_terminates() -> None:
+    """With tools present, persistent empty responses force tool_choice on
+    EVERY retry (never the nudge) and still terminate after max retries."""
+    from openclose.agent.agent import AgentMode
+    from openclose.agent.loop import _EMPTY_RESPONSE_NUDGE, _MAX_EMPTY_RETRIES
+
+    provider = _make_provider()
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def mock_chat(**kwargs: Any) -> Any:
+        captured_kwargs.append(kwargs)
+        # Always empty — the model never recovers.
+        yield _build_chunk(content=None, tool_calls=None, finish_reason="stop")
+
+    provider.chat = mock_chat
+    agent = Agent(
+        name="build", description="main", model="test", max_steps=10,
+        system_prompt="x", mode=AgentMode.PRIMARY, allowed_tools=["read"],
+    )
+    loop = AgentLoop(
+        agent=agent, provider=provider,
+        tool_executor=AsyncMock(return_value=ToolResult(output="ok")),
+        tool_schemas=[{"name": "read", "parameters": {"properties": {}}}],
+    )
+
+    events = []
+    async for event in loop.run("hi"):
+        events.append(event)
+
+    # Terminates after exactly _MAX_EMPTY_RETRIES calls (graceful, no wedge).
+    assert len(captured_kwargs) == _MAX_EMPTY_RETRIES
+    assert any(e.type == "done" for e in events)
+    # First call unforced; every retry forces tool_choice="required".
+    assert captured_kwargs[0].get("tool_choice") is None
+    assert all(
+        k.get("tool_choice") == "required" for k in captured_kwargs[1:]
+    )
+    # The nudge must never be injected when tools are available.
+    assert all(
+        m.get("content") != _EMPTY_RESPONSE_NUDGE for m in loop._messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_subagent_empty_response_on_step1_forces_recovery() -> None:
+    """A sub-agent whose step 1 returns empty keeps tool_choice='required' on
+    the retry — now via the empty-response recovery, since the step-1 forcing
+    has been consumed."""
+    from openclose.agent.agent import AgentMode
+
+    provider = _make_provider()
+    captured_kwargs: list[dict[str, Any]] = []
+    call_count = {"n": 0}
+
+    async def mock_chat(**kwargs: Any) -> Any:
+        captured_kwargs.append(kwargs)
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Step 1 empty (despite step-1 forcing) — the wedge trigger.
+            yield _build_chunk(content=None, tool_calls=None, finish_reason="stop")
+        elif call_count["n"] == 2:
+            # Forced retry: model emits a tool call and recovers.
+            yield _build_chunk(tool_calls=[{
+                "index": 0, "id": "tc1", "name": "read",
+                "arguments": json.dumps({"file_path": "/tmp/x.py"}),
+            }])
+        else:
+            # After the tool result, finish with the report text.
+            yield _build_chunk(content="found it")
+
+    provider.chat = mock_chat
+    agent = Agent(
+        name="delegate", description="sub", model="test", max_steps=5,
+        system_prompt="x", mode=AgentMode.SUBAGENT, allowed_tools=["read"],
+    )
+
+    async def mock_executor(name: str, args: dict[str, Any]) -> ToolResult:
+        return ToolResult(output="contents")
+
+    loop = AgentLoop(
+        agent=agent, provider=provider,
+        tool_executor=mock_executor,
+        tool_schemas=[{"name": "read", "parameters": {"properties": {}}}],
+        project_dir="/tmp",
+    )
+
+    events = []
+    async for event in loop.run("Mission: x"):
+        events.append(event)
+
+    assert call_count["n"] == 3
+    # Step 1: forced by the sub-agent step-1 rule.
+    assert captured_kwargs[0].get("tool_choice") == "required"
+    # Step 2 (the retry): step-1 rule no longer applies, so "required" here is
+    # attributable purely to the empty-response recovery.
+    assert captured_kwargs[1].get("tool_choice") == "required"
+    # Step 3 (after the tool result): reverts to auto.
+    assert captured_kwargs[2].get("tool_choice") is None
+    assert any(e.type == "done" for e in events)
 
 
 # ── Install-burst detection ─────────────────────────────────────────────────

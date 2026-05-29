@@ -30,8 +30,12 @@ from openclose.log import get_logger
 log = get_logger(__name__)
 
 # Maximum consecutive empty LLM responses before terminating the loop.
-# Local models (e.g. vLLM) occasionally return finish_reason=stop with
-# no content; retrying with a nudge message usually recovers.
+# Local models (e.g. vLLM, llama.cpp) occasionally return
+# finish_reason=stop with no content — sometimes deterministically, when
+# the model collapses to an end-of-turn token conditioned on a long or
+# repetitive trajectory. When tools are available the retry forces a tool
+# call (tool_choice="required"), which reliably recovers; otherwise it
+# falls back to a text nudge.
 _MAX_EMPTY_RETRIES = 3
 _EMPTY_RESPONSE_NUDGE = (
     "Continue with the task. If you need to use a tool, make a tool call. "
@@ -431,6 +435,12 @@ class AgentLoop:
 
         self._messages.append({"role": "user", "content": user_message})
         consecutive_empty_responses = 0
+        # Set after an empty (EOS-only) completion to bind the *next* LLM
+        # call to tool_choice="required". An empty response is recoverable
+        # when the tool call is forced at the API boundary; a plain text
+        # nudge cannot help because the trigger is the accumulated
+        # trajectory, not a missing instruction.
+        force_tool_choice = False
 
         while self._step < self._agent.max_steps:
             if self._cancel_event and self._cancel_event.is_set():
@@ -473,11 +483,16 @@ class AgentLoop:
             # legitimately stop with "target not found").
             tool_choice = (
                 "required"
-                if self._agent.mode == AgentMode.SUBAGENT
-                and self._step == 1
+                if (
+                    (self._agent.mode == AgentMode.SUBAGENT and self._step == 1)
+                    or force_tool_choice
+                )
                 and tools
                 else None
             )
+            # Consumed: forcing applies only to the single retry that follows
+            # an empty response.
+            force_tool_choice = False
 
             try:
                 async for chunk in self._provider.chat(
@@ -1002,21 +1017,41 @@ class AgentLoop:
                 yield StreamEvent("done", done=True)
                 return
 
-            log.warning(
-                "Empty LLM response (attempt %d/%d, step %d, "
-                "finish_reason=%s), retrying with nudge",
-                consecutive_empty_responses, _MAX_EMPTY_RETRIES,
-                self._step, finish_reason,
-            )
-            yield StreamEvent(
-                "info",
-                content=f"Empty response from model, retrying "
-                f"({consecutive_empty_responses}/{_MAX_EMPTY_RETRIES})...",
-            )
-            self._messages.append({
-                "role": "user",
-                "content": _EMPTY_RESPONSE_NUDGE,
-            })
+            # An empty (EOS-only) completion is recoverable: the model can
+            # still act on this exact history when the tool call is bound at
+            # the API boundary. A plain text nudge does not help — the
+            # trigger is the accumulated trajectory, not a missing
+            # instruction — so when tools are available we force a tool call
+            # on the retry. Without tools, fall back to the nudge.
+            if tools:
+                force_tool_choice = True
+                log.warning(
+                    "Empty LLM response (attempt %d/%d, step %d, "
+                    "finish_reason=%s), retrying with tool_choice=required",
+                    consecutive_empty_responses, _MAX_EMPTY_RETRIES,
+                    self._step, finish_reason,
+                )
+                yield StreamEvent(
+                    "info",
+                    content=f"Empty response from model, forcing tool call "
+                    f"({consecutive_empty_responses}/{_MAX_EMPTY_RETRIES})...",
+                )
+            else:
+                log.warning(
+                    "Empty LLM response (attempt %d/%d, step %d, "
+                    "finish_reason=%s), retrying with nudge",
+                    consecutive_empty_responses, _MAX_EMPTY_RETRIES,
+                    self._step, finish_reason,
+                )
+                yield StreamEvent(
+                    "info",
+                    content=f"Empty response from model, retrying "
+                    f"({consecutive_empty_responses}/{_MAX_EMPTY_RETRIES})...",
+                )
+                self._messages.append({
+                    "role": "user",
+                    "content": _EMPTY_RESPONSE_NUDGE,
+                })
             continue
 
         yield StreamEvent(
