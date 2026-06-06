@@ -1056,7 +1056,7 @@ async def test_run_install_burst_injects_nudge() -> None:
     ]
     assert len(nudges) == 1, f"expected exactly 1 nudge, got {len(nudges)}"
     # The very first user message ("install some packages") shouldn't match.
-    assert nudges[0]["content"].startswith("You've made 3 bash calls")
+    assert nudges[0]["content"].startswith("You made 3 bash calls")
 
 
 @pytest.mark.asyncio

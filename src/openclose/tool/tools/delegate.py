@@ -3,8 +3,8 @@
 The parent passes 1–3 independent missions in ``mission_1``, ``mission_2``,
 ``mission_3``; the tool spawns one read-only sub-agent per provided slot,
 runs them in parallel, and returns a single combined report. Each
-sub-agent receives the same shared ``budget`` (per-mission tool-call cap
-and report-depth prompt) and frames its mission as a free-form
+sub-agent receives the same shared ``budget`` (per-mission tool-call
+cap) and frames its mission as a free-form
 exploration: state a precise question, trace, call-chain, or angle, and
 the sub-agent answers exactly that, shaping the report to fit the
 question.
@@ -33,69 +33,45 @@ _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TEXT_CHARS = 500
 
 _SUBAGENT_PROMPT = """\
-You are a read-only sub-agent. The main agent has handed you a free-form
-exploration mission — a specific question, trace, call-chain, or angle to
-investigate. Your job is to answer THAT question. Do NOT pivot into a
-generic project map; map only what is needed to answer what was asked.
+You are a read-only sub-agent. The main agent gave you ONE
+exploration mission: a question, trace, call-chain, or angle. Answer
+THAT. Do NOT pivot into a generic project map.
 
-The parent is expected to have stated (a) the precise mission and (b) the
-shape of answer it wants. If the mission is genuinely ambiguous, pick the
-most plausible reading, answer that, and flag the ambiguity under Caveats —
-do not guess widely or fan out into unrelated areas.
+Mission ambiguous -> pick the most plausible reading, answer it, flag
+the ambiguity in Caveats. Do not fan out.
 
-Soft grounding: claims must be grounded in files you have actually opened
-in this session — not prior knowledge of similar projects. Every concrete
-claim cites file:line. If something cannot be grounded, state it as an
-assumption under Caveats rather than as a fact.
+Grounding:
+- Cite file:line for every concrete claim.
+- Only cite files you opened THIS session. No prior knowledge of similar projects.
+- Cannot ground a claim -> state it in Caveats as an assumption, NOT as fact.
 
-Workflow:
-- Use grep/glob to locate, read to inspect, bash for read-only commands only.
+Rules:
+- grep/glob to find, read to inspect, bash for READ-ONLY commands only.
 - Do NOT modify files, install packages, or change system state.
-- Stay tightly focused on the specific question. Stop as soon as it is
-  answered defensibly; do not keep digging for unrelated observations.
-- You MUST make at least one tool call before emitting your report.
-  Reports submitted without any tool call are REJECTED outright — a
-  text-only answer is treated as fabricated from prior knowledge of
-  similar projects, not as a grounded answer about THIS repo.
+- Stop as soon as the question is answered. Do not dig for unrelated issues.
+- You MUST make at least one tool call before the report. A report with
+  no tool call is REJECTED.
 
 Output:
-- Wrap your final report between an opening `<report>` tag and a closing
-  `</report>` tag. Text outside the tags is discarded as scratch thinking —
-  feel free to think out loud BEFORE the opening tag. Do not emit the tags
-  with no real content between them; the body must be your actual report.
-- Inside the tags, structure the report to fit the question. There is no
-  fixed skeleton — use whatever sections make the answer clearest (e.g. a
-  trace, a table of call sites, a step-by-step walk-through). No preamble
-  outside the report sections.
-- End with a short Caveats block ONLY if there is anything material the
-  parent should know you could not verify or that was ambiguous. Omit it
-  otherwise."""
-
-_BUDGET_PROMPTS: dict[str, str] = {
-    "default": """\
-Budget: default (30 tool calls).
-Expected output: a focused answer to the mission. Findings (bugs, risks,
-load-bearing details) are NOT required at this budget — only include them
-if they fall out naturally from the work. Stop as soon as the question is
-answered defensibly; do not push deeper looking for issues.""",
-
-    "extended": """\
-Budget: extended (50 tool calls).
-Expected output: a focused answer to the mission, AND concrete findings
-the investigation reveals — bugs, risks, load-bearing details the parent
-should know. The mission answer is still the primary deliverable; findings
-complement it, they do not replace it.""",
-}
-
-_VALID_BUDGETS = frozenset(_BUDGET_PROMPTS)
+- Wrap the final report in literal <report> and </report> tags. Text
+  outside the tags is DISCARDED. Think out loud BEFORE the opening tag.
+- Do not emit empty tags. The body must be the real report.
+- Free-form structure inside the tags. Use whatever sections fit the
+  question (trace, table, walk-through). No preamble.
+- Include concrete findings the work reveals (bugs, risks, load-bearing
+  details). The mission answer stays primary.
+- Add a Caveats section ONLY if something material was unverifiable or
+  ambiguous. Else omit."""
 
 # Hard ceiling on the number of tool calls each sub-agent may make.
-# Enforced via cancel_event in _run_subagent; the prompt does the shaping
-# and the cap is the safety stop. Applied per-mission, not globally.
+# Enforced via cancel_event in _run_subagent; the 95% reminder does the
+# shaping and the cap is the safety stop. Applied per-mission, not globally.
 _BUDGET_MAX_TOOL_CALLS: dict[str, int] = {
     "default": 30,
     "extended": 50,
 }
+
+_VALID_BUDGETS = frozenset(_BUDGET_MAX_TOOL_CALLS)
 
 # Empty-response retries (3) and parallel tool calls per LLM iteration mean
 # step count can briefly exceed tool-call count. This factor sets the agent
@@ -111,13 +87,10 @@ _DEFAULT_BUDGET = "default"
 _BUDGET_REMINDER_PCT = 0.95
 _BUDGET_REMINDER = (
     "Budget reminder: you have used at least 95% of your tool-call budget "
-    "({used}/{cap}). STOP INVESTIGATING NOW AND EMIT YOUR FINAL REPORT "
-    "wrapped between opening `<report>` and closing `</report>` tags. "
-    "Inside the report, in addition to your "
-    "usual sections, include a 'Stopping point' section that states exactly "
-    "where in the mission you stopped — what you did cover, what you did NOT "
-    "get to, and what the parent would need to look at next. Do not start "
-    "new tool calls; the few remaining are reserved as a buffer."
+    "({used}/{cap}). STOP TOOL CALLS NOW. Emit your final report wrapped "
+    "in <report> and </report> tags. Add a 'Stopping point' section: what "
+    "you covered, what you did NOT cover, what the parent should look at "
+    "next. Start no new tool calls; the rest are a buffer."
 )
 
 # Single output cap applied to the COMBINED report across all missions.
@@ -444,7 +417,7 @@ def make_delegate_tool(project_dir: str, registry: ToolRegistry) -> Tool:
 
         provider = get_provider()
 
-        system_prompt = _SUBAGENT_PROMPT + "\n\n" + _BUDGET_PROMPTS[budget]
+        system_prompt = _SUBAGENT_PROMPT
         max_tool_calls = _BUDGET_MAX_TOOL_CALLS[budget]
         total = len(missions)
 

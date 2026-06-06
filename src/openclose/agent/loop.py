@@ -50,9 +50,9 @@ _EMPTY_RESPONSE_NUDGE = (
 _READONLY_TOOLS_FOR_DOOM = {"grep", "read", "glob", "delegate"}
 _DOOM_RECOVERY_NUDGE = (
     "You called the same read-only tool with identical arguments three "
-    "times in a row with no progress. STOP repeating that call. Using "
-    "only what you already know, make your best-effort edit to solve "
-    "the task, or explain why you cannot. Do not invoke that tool again."
+    "times in a row. No progress. STOP repeating it. Using only what "
+    "you already know, make your best-effort edit, or explain why you "
+    "cannot. Do NOT call that tool again."
 )
 
 # Windowed bash detection. We track the last K bash commands and fire on
@@ -64,11 +64,10 @@ _BASH_WINDOW = 10
 _BASH_DOOM_THRESHOLD = 3  # same command repeated this many times in window → bash doom
 _INSTALL_BURST_THRESHOLD = 3  # same install kind this many times in window → burst nudge
 _BASH_DOOM_RECOVERY_NUDGE = (
-    "You ran the same bash command {n} times within your last "
-    f"{_BASH_WINDOW} bash calls. Re-running it is not producing new "
-    "information. STOP repeating that command. Using only what you "
-    "already know, make progress on the task or explain why you "
-    "cannot. Do not run that exact command again."
+    "You ran the same bash command {n} times in your last "
+    f"{_BASH_WINDOW} bash calls. It is producing no new information. "
+    "STOP repeating it. Using only what you already know, make progress "
+    "or explain why you cannot. Do NOT run that exact command again."
 )
 
 # Install-burst patterns. When the LLM fires N bash calls of the same
@@ -91,15 +90,15 @@ _INSTALL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bgo\s+(install|get)\b"), "go install"),
 ]
 _INSTALL_BURST_NUDGE = (
-    "You've made {n} bash calls matching a {label} pattern in a short "
-    "window. Common pitfalls when this happens:\n"
-    "  - Fighting an environment the harness is supposed to handle for you\n"
-    "  - Re-running the same check instead of reading the existing output\n"
-    "  - Working around a constraint you should be respecting (e.g., a "
-    "\"do not run tests\" instruction in the task)\n\n"
-    "Stop and consider: is this advancing the task, or are you stuck on "
-    "infrastructure? Re-read the original instructions and the most recent "
-    "tool output before issuing another bash call."
+    "You made {n} bash calls matching a {label} pattern in a short "
+    "window. This usually means one of:\n"
+    "  - Fighting an environment the harness handles for you\n"
+    "  - Re-running the same check instead of reading existing output\n"
+    "  - Working around a constraint you should respect (e.g. a "
+    "\"do not run tests\" instruction)\n"
+    "STOP. Is this advancing the task or are you stuck on "
+    "infrastructure? Re-read the original instructions and the most "
+    "recent tool output before another bash call."
 )
 
 
