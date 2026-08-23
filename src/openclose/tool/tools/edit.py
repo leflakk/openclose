@@ -65,43 +65,24 @@ def make_edit_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="edit",
-        description=(
-            "USE IT TO MAKE A SINGLE TARGETED CHANGE in an existing file via "
-            "literal find/replace. "
-        ),
+        description='edit(file_path="src/main.py", old_string="def foo():", new_string="def bar():", replace_all=False)',
         parameters=[
             ToolParameter(
                 name="file_path",
-                description=(
-                    "Path to the file to edit. Absolute or relative to the project "
-                    "working directory. Must point to an existing file inside the "
-                    "project; edits outside the project are rejected."
-                ),
+                description='"src/main.py"',
             ),
             ToolParameter(
                 name="old_string",
-                description=(
-                    "Exact substring to find — matched literally, not as a regex. "
-                    "Must appear in the file, and by default must appear exactly "
-                    "once; include enough surrounding context (whitespace, "
-                    "neighboring lines) to make the match unique."
-                ),
+                description='"def foo():"',
             ),
             ToolParameter(
                 name="new_string",
-                description=(
-                    "Text that replaces every match of `old_string`. Use `\"\"` to "
-                    "delete `old_string` entirely. Whitespace/indentation in this "
-                    "string is taken literally — preserve the surrounding style."
-                ),
+                description='"def bar():"',
             ),
             ToolParameter(
                 name="replace_all",
                 type="boolean",
-                description=(
-                    "When true, replace every occurrence of `old_string` (e.g., to "
-                    "rename a symbol throughout the file)."
-                ),
+                description="False",
                 required=False,
                 default=False,
             ),

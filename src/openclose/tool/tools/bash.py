@@ -231,32 +231,16 @@ def make_bash_tool(project_dir: str = ".") -> Tool:
 
     return Tool(
         name="bash",
-        description=(
-            "USE IT TO RUN SHELL-ONLY COMMANDS — running tests, build steps, git, "
-            "package managers, process management. From the project directory"
-            "Returns stdout/stderr plus exit status. "
-            "Requires `bash` on PATH (Git Bash or WSL on Windows). "
-            "Dangerous commands are blocked for safety. "
-            "Never loop on failed on failed install commands to chase missing dependencies in "
-            "sandboxed environments — report the failure and stop."
-        ),
+        description='bash(command="pytest tests/ -x", timeout=60000)',
         parameters=[
             ToolParameter(
                 name="command",
-                description=(
-                    "Bash command line to execute. Runs via `bash -c` from the "
-                    "project working directory. Working directory does not "
-                    "persist across calls — chain dependent steps with `&&` in a "
-                    "single call."
-                ),
+                description='"pytest tests/ -x"',
             ),
             ToolParameter(
                 name="timeout",
                 type="integer",
-                description=(
-                    "Maximum runtime in milliseconds before the command is "
-                    "killed. Set explicitly for commands (tests, builds)."
-                ),
+                description="60000",
                 required=False,
                 default=0,
             ),

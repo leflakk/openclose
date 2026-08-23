@@ -825,14 +825,15 @@ async def test_delegate_uses_exploration_trunk(tmp_path: Path) -> None:
     # Review-mode artefacts must not appear in the trunk anymore.
     assert "independent reviewer sub-agent" not in sp
     assert "## Scope" not in sp
-    # Default budget is communicated.
-    assert "Budget: default" in sp
+    # Budget text is no longer injected into the prompt — the cap and the
+    # 95% reminder are the guardrails.
+    assert "Budget:" not in sp
 
 
 @pytest.mark.asyncio
 async def test_delegate_extended_budget_prompt(tmp_path: Path) -> None:
-    """Extended budget swaps in the extended budget block which mentions
-    findings as part of the expected output."""
+    """Extended budget raises the tool-call cap (visible via max_steps);
+    the trunk prompt always mentions findings."""
     from openclose.tool.tools.delegate import make_delegate_tool
     from openclose.tool.registry import ToolRegistry
     from openclose.tool.tool import Tool, ToolResult as TR
@@ -860,9 +861,16 @@ async def test_delegate_extended_budget_prompt(tmp_path: Path) -> None:
                 result = await tool.execute(mission_1="x", budget="extended")
 
     assert result.ok
+    from openclose.tool.tools.delegate import (
+        _BUDGET_MAX_TOOL_CALLS,
+        _STEP_SAFETY_MULTIPLIER,
+    )
+    expected_steps = (
+        _BUDGET_MAX_TOOL_CALLS["extended"] * _STEP_SAFETY_MULTIPLIER + 10
+    )
+    assert captured.get("max_steps") == expected_steps
+    # The trunk prompt always tells the sub-agent to surface findings.
     sp = captured.get("system_prompt", "")
-    assert "Budget: extended" in sp
-    # Extended budget explicitly tells the sub-agent to surface findings.
     assert "findings" in sp.lower()
 
 
@@ -896,8 +904,14 @@ async def test_delegate_empty_budget_falls_back(tmp_path: Path) -> None:
                 result = await tool.execute(mission_1="anything", budget="")
 
     assert result.ok  # empty falls back, no error
-    sp = captured.get("system_prompt", "")
-    assert "Budget: default" in sp
+    from openclose.tool.tools.delegate import (
+        _BUDGET_MAX_TOOL_CALLS,
+        _STEP_SAFETY_MULTIPLIER,
+    )
+    expected_steps = (
+        _BUDGET_MAX_TOOL_CALLS["default"] * _STEP_SAFETY_MULTIPLIER + 10
+    )
+    assert captured.get("max_steps") == expected_steps
 
 
 @pytest.mark.asyncio
